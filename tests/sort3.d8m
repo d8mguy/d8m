@@ -1,0 +1,8 @@
+import "sort"
+import go "math/rand"
+val cmp = \(a,b: integer) { a <= b }
+val trysome = \(len: integer) {
+    val randx = rand.New(rand.NewSource(1))
+    each(i^1..30) println(inOrder(sort.modsort((1..len).{randx.Intn(800*i)}), cmp))
+}
+trysome(500)

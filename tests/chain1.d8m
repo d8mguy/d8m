@@ -1,0 +1,8 @@
+
+val foo = \imp(lst : list(integer)) {
+    val interm1 = lst.[this % 2 == 1].{this*this}
+    val sum1 = sigma(interm1)
+    interm1 + lst.[this % 2 == 0].{this * sum1}
+}
+val lst0 = [1,5,3,77,34,2,12]
+foo(lst0)

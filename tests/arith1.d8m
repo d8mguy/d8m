@@ -1,0 +1,9 @@
+// arith1: check fix on a bug generating code for assoc but non-commutative oprs
+import go "math/rand"
+val foo = \() {
+    val randx = rand.New(rand.NewSource(1))
+    val a = randx.Intn(12)+12
+    val b = randx.Intn(12)+5
+    println(a, b, a - (b - 2))
+}
+foo()

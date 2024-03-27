@@ -1,0 +1,12 @@
+// gncsort1
+import "sort" melted
+val gncInt = GSLT(integer)
+import go "math/rand"
+val trygncsort = \imp() {
+    val randx = rand.New(rand.NewSource(1))
+    var lst = cast((1..50).{randx.Intn(200)}, gncInt)
+    modsort(lst)
+    println(lst)
+    println(lst[5...12])
+}
+trygncsort()

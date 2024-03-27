@@ -1,0 +1,15 @@
+// There was a bug in != checking when comparing ELTs. This checks that it's fixed. I am pretty sure it doesn't actually relate to ||
+import go "math/rand"
+val tokexprIndices = label(:comma, :newline, :ident, :dqstrg, :bqstrg, :lncomment, :mlncomment, :fltlit, :intlit, :done)
+val foo = \imp() {
+    val randx = rand.New(rand.NewSource(1))
+    loop {
+        val nxtkn = randx.Intn(12)
+        var tokType: tokexprIndices
+        if(nxtkn != 0) {
+            tokType = randx.Intn(16)
+            unless(tokType == :lncomment || tokType == :mlncomment) break
+        }
+    }
+}
+foo()

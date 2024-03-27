@@ -1,0 +1,7 @@
+// testing concatPairs
+val lst1 = [[1, 5], [3]]
+val lst2 = [[2, 4], [7, 10]]
+val foo = \() {
+    println(concatPairs(lst1, lst2))
+}
+foo()

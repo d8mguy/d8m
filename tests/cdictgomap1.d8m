@@ -1,0 +1,7 @@
+import "cdict" melted
+import go "math/rand"
+val cdi = countingdict(integer)
+val randx = rand.New(rand.NewSource(1))
+val cd0 = [cdi: (1..100).{randx.Intn(20)}]
+applyST(Gomap(integer, integer), cd0)
+(0...20).{cd0.eltcount(this)}

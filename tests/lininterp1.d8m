@@ -1,0 +1,24 @@
+// lininterp1
+
+import "num/lininterp" as intp
+
+// get an interpolant I of fsm at x, return y/I if it exists, else 0
+val interpRatio = \mod(fsm: intp.interpFSM, y, x: float) {
+    if(fsm.exists(x)) y/fsm.next(x) else 0.0
+}
+import go "math/rand"
+val foo = \imp() {
+    val randx = rand.New(rand.NewSource(1))
+    // accumulate (plus the offset) ensures xvals1 is strictly increasing
+    val xvals1 = accumulate((1..9).{ 4.0*this }, $+, 8.0)
+    val yvals1 = (1..10).{ 0.5*randx.Intn(30) }
+    val scalef = xvals1[9]/12
+    val testx = (1..15).{ 0.1 * round(scalef * this * 10) }
+    println("xvals1:", xvals1)
+    println("yvals1:", yvals1)
+    var fsm = [intp.interpFSM: xvals1, yvals1]
+    val rslts = testx.{ interpRatio(fsm, 12.0, this) }
+    println("testx:", testx)
+    println("rslts:", rslts)
+}
+foo()

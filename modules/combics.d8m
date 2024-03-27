@@ -1,0 +1,91 @@
+// Combics provides a selection of useful combinatorial algorithms. This is intended to be an evolving module for quite some time.
+
+export randperm, enumCombns, streamIndices
+
+// Return a list(list(integer)) where each element is a length k list chosen from 0...n.
+val enumCombns = \imp(n, k, totcount: integer) {
+    if(k < 1 || k >= n) exit("bad args")
+    var proto = (1..k).{index}
+    var rslt: list(list(integer)) = [copy(proto)]
+    val nkdiff = n - k
+    var incrAt = k - 1
+    // while condition is final exit criterion
+    while(incrAt > 0 || proto[0] < n - k) {
+        // loop through the options at current incrementing position
+        while((incrAt < k - 1 && proto[incrAt] < proto[incrAt+1]+1) || proto[incrAt] < n - 1) {
+            proto[incrAt] += 1
+            rslt.pushb(copy(proto))
+        }
+        if(rslt.count > totcount) break
+        // then reset incrAt and values in proto to set up next incrementing sequence
+        while(incrAt > 0) {
+            incrAt -= 1
+            if(proto[incrAt] < nkdiff + incrAt) {
+                var nval = proto[incrAt]+1
+                each(h^incrAt...k) {
+                    proto[h] = nval
+                    nval += 1
+                }
+                rslt.pushb(copy(proto))
+                incrAt = k - 1
+                break
+            }
+        }
+    }
+    rslt
+}
+
+// A stream type that accepts a list of lengths and generates all the indices up to each of those lengths, in
+// lexicographic order. Thus, given [1,2,3] it will generate [[0,0,0],[0,0,1],[0,0,2],[0,1,0],[0,1,1],[0,1,2]].
+// Note that `[streamIndices: ]` is immediately done, it generates nothing. This is the right way to handle the
+// situation where you need to enumerate all the elements of a variable number of lists. It's sensible to think of the k
+// values that initialize a `streamIndices` as the extents of a k-dimensional cube. From this perspective, the
+// stream generates all vertices of the cube in lexicographic order. A  `streamIndices` will panic if any initializing length
+// is <= 0 or `next` is called when `done`.
+//
+// A `stream type` by convention has methods named `current`, `next`, and `done`; you call `next` until `done` becomes true.
+val streamIndices = extend tuple(cur, limits: list(integer)) where {
+    method lithook = \mod(lims: list(integer)) {
+        if(any(lims.{this < 1})) exit("streamIndices requires positive limits")
+        limits = lims.{this - 1}
+        cur = zerolist(lims.count)
+        unless(lims.count == 0) cur[lims.count - 1] = -1     // initialize so next returns all zeros first time
+    }
+    // utility method: number of elts produced by self from create to done
+    method eltcount = \() { reduce(limits, \(a,b: integer) { a*(b+1)}, 1) }
+    // utility method: number of "dimensions"
+    method nDimensions = \() { cur.count }
+    method restart = \mod() {
+        cur = zerolist(limits.count)
+        unless(limits.count == 0) cur[limits.count - 1] = -1
+    }
+    method done = \() { cur == limits }
+    method current = \() { cur }
+    method next = \mod() -> list(integer) {
+        val nelts = limits.count
+        each(i^1..nelts) {
+            val ii = nelts - i; if(cur[ii] < limits[ii]) { cur[ii] += 1; each(j^(ii + 1)...nelts) cur[j] = 0; return cur }
+        }
+        exit("should not call terminated stream")
+    }
+}
+
+// Randomly permute a list(T), using go package `math/rand` with implicit seed to generate the random numbers. It modifies and returns the list.
+// Note that repeated calls to this function will not generate all its permutations without repetition.
+// Note also that since it uses the PRNG state built into `math/rand`, using this may change
+// the behavior of other program elements that also use that PRNG. If this is a problem, you can easily write
+// a version with its own state; the code is just 8 lines long.
+// The algorithm here is called the Fisher-Yates shuffle; as explained in the wikipedia, a version was
+// published in 1938 by Fisher and Yates, and popularized in vol 2 of Knuth's TAOCP.
+
+given(T::entity) {
+    val randperm = \mod(lst: list(T), randSrc: \(integer)->integer) {
+        var lim = count(lst)
+        each(i^0...count(lst)-1) {
+            val j = i+randSrc(lim)
+            swap(lst, i, j)
+            lim -= 1
+        }
+        lst
+    }
+}

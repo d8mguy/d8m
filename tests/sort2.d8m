@@ -1,0 +1,5 @@
+import "sort"
+import go "math/rand"
+val cmp = \(a,b: float) { a <= b }
+val randx = rand.New(rand.NewSource(1))
+inOrder(sort.modsort((1..500).{(randx.Float64() -0.5)*2000}), cmp)

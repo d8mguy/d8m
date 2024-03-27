@@ -1,0 +1,36 @@
+// splay2
+import "splay" melted
+import go "math/rand"
+import "combics" melted
+val ispT = splaytree(integer)
+var runsplay = \imp(len: integer) {
+    val randx = rand.New(rand.NewSource(1))
+    val randsrc = \(lim:integer) { randx.Intn(lim) }
+    var errcnt = 0
+    var lst = (1..len).{this}
+    var spl = [ispT: randperm((1..len).{this}, randsrc)]
+    val splst = spl.{this}
+    if(splst != lst) {
+        errcnt += 1
+        println("order:", splst)
+    }
+    val third = (len - 1)/3
+    // pick a selection of the permuted indices and delete then insert them, with presence checks in between
+    each(rep^1..2) {
+       val lo = randx.Intn(third)
+       val hi = lo + randx.Intn(third)
+       val perm = randperm((1..len).{this}, randsrc)
+       val selected = select(perm, lo, hi)
+       println("lo=", lo, "; hi=", hi, "; deleting ", selected)
+       each(i^selected) unless(spl.delete(i)) println("failed to find", i, "for deletion")
+       println("after deletes, tree enum gives", spl.{this})
+       each(i^perm) {
+            val found = present(spl, i)
+            if(found != (index(selected, i) == nil)) println("failed to find", i, "in sweep")
+       }
+       // reinsert in reverse order for no particular reason
+       each(i^reverse(selected)) unless(spl.insert(i)) println("failed to insert", i)
+       println("after inserts, tree enum gives", spl.{this})
+    }
+}
+runsplay(100)

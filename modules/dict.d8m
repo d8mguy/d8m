@@ -1,0 +1,37 @@
+// Module dict provides dictionaries, aka associative arrays, as an abstract type. It also defines an STMap to go's map type.
+// Dict uses extensional equality (written as ==) to look up keys. You can define a version of dict that uses === in a few
+// lines of code if you need that.
+
+export dict
+
+val dict = \typegen(KT, VT::entity) {
+	val pairT = tuple(key: KT, value: VT)
+	extend tuple(private x: list(pairT)) where {
+		assert x.count == x.{key}.uniq.count
+		assert enumerable(x)
+		method lithook = \mod(x0: list(pairT)) { x = x0 }
+		method lithook = \mod(kz: list(KT), vz: list(VT)) { x = (0...kz.count).{ [pairT: kz[this], vz[this]] } }
+		method count = \() { x.count }
+		method rvalindex = \(k: KT) { val tmp = x[key == k => index]; tmp == nil ? nil : x[tmp].value }
+		method lvalindex = \mod(k: KT, v: VT) -> nothing {
+			var tmp = x[key == k => index]
+			if(tmp == nil) x.pushb([pairT: k, v]) else x[tmp].value = v
+		}
+		method remove = \mod(k: KT) {
+			val inx = x[key == k => index]
+			unless(inx == nil) x.removeIndex(inx)
+		}
+		method keys = \() { x.{key} }
+		method values = \() { x.{value} }
+	}
+}
+given(T1, T2::entity, aT1: T1, alpr: list(tuple(key: T1, value: T2))) {
+	STMap {
+		source = dict(T1, T2)
+		target = Gomap(T1, T2)
+		direct lvalindex, rvalindex, count
+		self.remove(aT1) => self.delete(aT1)
+		self.lithook(alpr) => self.lithook(alpr)
+		// TBD: keys, values
+	}
+}

@@ -1,0 +1,11 @@
+import "olistCached" as olc
+import go "math/rand"
+val tuptest = tuple(x, y: integer)
+val olcI = olc.olistCached(tuptest, \(tp:tuptest) { tp.y }, 100)
+val tryolc = \imp() {
+    val randx = rand.New(rand.NewSource(1))
+    var olc1 = [olcI: ]
+    each(i^1..400) olc1.insert([tuptest: randx.Intn(600), randx.Intn(3000)])
+    olc1.{this}
+}
+tryolc()

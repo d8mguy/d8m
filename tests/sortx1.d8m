@@ -1,0 +1,14 @@
+// sortx: sort with extract fn
+import "sort" melted
+import go "math/rand"
+import go "fmt"
+var trysort = \imp() {
+    val randx = rand.New(rand.NewSource(1))
+    val tupT = tuple(slot1 : integer, slot2 : float, slot3 : string)
+    val makefake = \(inx : integer) { [tupT: randx.Intn(100000), randx.Float64(), fmt.Sprint(inx)] }
+    var lst = (1..10000).{makefake(this)}
+    val xtr = \(x : tupT) { x.slot1 }
+    modsort(lst, xtr)
+    inOrder(lst.{slot1})
+}
+trysort()

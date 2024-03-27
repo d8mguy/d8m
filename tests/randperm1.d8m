@@ -1,0 +1,19 @@
+import go "math/rand"
+given(T::entity) {
+    val randperm = \mod(lst : list(T), randSrc: \(integer)->integer) {
+        var lim = count(lst)
+        each(i^0...count(lst)-1) {
+            val j = i+randSrc(lim)
+            swap(lst, i, j)
+            lim -= 1
+        }
+        lst
+    }
+}
+val rptest = \imp() {
+    val randx = rand.New(rand.NewSource(1))
+    val rsrc = \(lim:integer) { randx.Intn(lim) }
+    var ints = [0,1,2,3,4,5,6,7,8,9]
+    each(i^1..20) println(randperm(ints, rsrc))
+}
+rptest()

@@ -1,0 +1,14 @@
+import "olist" melted
+import "set" melted
+val seti = set(integer)
+val settests = \imp() {
+    var s0 = [seti: 1,4,5]
+    applyST(olist(integer, integer, \(x: integer) {x}), s0)
+    println(5 in s0)
+    println(7 in s0)
+    s0.add(15)
+    s0.add(30)
+    println(s0.count)
+    println(s0)
+}
+settests()

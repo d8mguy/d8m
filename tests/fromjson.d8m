@@ -1,0 +1,9 @@
+// fromJson
+import "codecs/json" melted
+val dataT0 = tuple(xxx : list(integer), yyy : list(float), zzz : string)
+var jstrm = [jsonStreamer:
+    `{"xxx":[29,15,35,47,-11,6,13,8,4,-12,2,19],
+      "yyy":[114.167760,78.830120,76.111840,38.055920,138.632280,13.591400,46.210760,70.675280,95.139800,16.309680],
+      "zzz":"a string"}`]
+val foo = \mod(js : jsonStreamer) { var adt0 : dataT0 = js.fromJson(); adt0 }
+compile(foo(jstrm), :unroll~true)

@@ -1,0 +1,88 @@
+// Bintree defines binary trees as a typegen. We store the root and node count in a tuple. This is really just
+// a sketch & may not be useful for anything.
+
+val bintree = \typegen(T::entity) {
+    val BTNode: type
+    val OBTNode = nilPossible(BTNode)
+    val BTNode = extend tuple(value: T, left, right: OBTNode) where {
+        method preorderbtn = \imp() -> list(T) {
+            val llist: list(T) = self.left != nil ? preorderbtn(self.left) : []
+            val rlist: list(T) = self.right != nil ? preorderbtn(right) : []
+            pushf(llist + rlist, value)
+        }
+    }
+    extend tuple(private root: BTNode, private countA: integer) where {
+        method root = \() { root }
+        method value = \() { root.value }
+        method left = \() { root.left }
+        method right = \() { root.right }
+        method count = \() { countA }
+        method incrCount = \mod(incr:integer) { countA += incr }
+
+        // Create a tree with a single node.
+        method lithook = \mod(rv: T) {
+            root = [BTNode: rv, nil, nil]
+            countA = 1
+        }
+
+        // Add a node with value lv as toNode's left child; toNode should be in the tree. Return the newly added node.
+        method addLeft = \mod(lv: T, toNode: BTNode) {
+            assert rcvrLinked(toNode)
+            val node = [BTNode: lv, toNode.left, nil]
+            toNode.left = node
+            countA += 1
+            node
+        }
+
+        // Add a node with value rv as toNode's right child; toNode should be in the tree. Return the newly added node.
+        method addRight = \mod(rv: T, toNode: BTNode) {
+            assert rcvrLinked(toNode)
+            val node = [BTNode: rv, nil, toNode.right]
+            toNode.right = node
+            countA += 1
+            node
+        }
+
+        // Remove the subtree rooted at the left child of fromNode; return the deleted subtree. Update count as if
+        // only the node itself is removed, for this to be accurate the caller must either link the rest in somewhere
+        // or use incrCount to correct things.
+        method removeLeft = \mod(lv: T, fromNode: BTNode) {
+            assert rcvrLinked(fromNode)
+            if(fromNode.left == nil) exit("left is empty")
+            countA -= 1
+            val ret = fromNode.left
+            fromNode.left = nil
+            ret
+        }
+
+        // Remove the subtree rooted at the right child of fromNode; return the deleted subtree. Update count as if
+        // only the node itself is removed, for this to be accurate the caller must either link the rest in somewhere
+        // or use incrCount to correct things.
+        method removeRight = \mod(rv: T, fromNode: BTNode) {
+            assert rcvrLinked(fromNode)
+            if(fromNode.right == nil) exit("right is empty")
+            countA -= 1
+            val ret = fromNode.right
+            fromNode.right = nil
+            ret
+        }
+
+        // traverses self in pre-order.
+        method preorder = \() { root.preorderbtn() }
+
+        // follows a path of booleans where true means "go left", starting at root; return the node we end up at.
+        // Exit if the path doesn't exist.
+        method go = \imp(path: list(boolean)) {
+            var cur: OBTNode = root
+            each(elt^path) {
+                if(cur == nil) exit("bad path")
+                else if(elt) cur = cur.left
+                else cur = cur.right
+            }
+            cur
+        }
+    }
+}
+
+
+export bintree

@@ -1,0 +1,11 @@
+// regexp2
+import "regexp"
+val tryRE = \(strg1, strg2: string) {
+    val ptnstrgs = [",", "[a-zA-Z_][a-zA-Z_0-9]*", "\".*\"", "`.*`", "[0-9]*\\.[0-9]+", "[0-9]+"]
+    val re1 = [regexp.scanexpT: ptnstrgs]
+    println(re1.scan(strg1))
+    val s2 = re1.scan(strg2)
+    println(s2)
+    println(re1.checkWhite(strg2, s2))
+}
+tryRE(" eiu, 388, \"ieu*;\", `SS;**8;xxxd`", "e_iu, ;**388, ` ieu*; S(S;`, xxxd")

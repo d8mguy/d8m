@@ -1,0 +1,247 @@
+// Module olist provides ordered lists, ie lists stored in ascending order on $<; methods are different from those of list.
+// It also defines an stmapping for olists to implement sets; the correctness of this depends on assumptions discussed
+// in the next few paragraphs.
+//
+// There are two typegen definitions here: of olist and olist0. Olist0 is for ordered types (types with a $< method); it
+// uses two identifiers because typegens don't overload in d8m. The olist typegen has 3 arguments: the element type `T`, an
+// ordered type that elements can be extracted to, and a key extraction function `oextract`. The code here assumes that
+// `oextract` totally orders `T`. This is subtle and isn't expressible in d8m's type scheme (or any type scheme): it means that
+// the order induced by oextract is a total order in the context of the list. D8m's interpretation of the
+// typepred `ordered` is discussed a bit in the spec, d8m infrastructure (if not the language itself) is built on the
+// assumption that methods named `$<` designate total orders. This means (by definition) that
+// for each pair of elements `t1`, `t2` we have `t1 < t2 || t1 == t2 || t2 > t1`.
+//
+// A concrete example may help clarify what's at stake here. Let `T` be a tuple representing accounts for some service.
+// Any collection of these accounts should be a set -- no dups. If stored as an olist(T), there will normally be at least
+// one attribute that's unique to each `T` -- an email address, account number, perhaps a creation
+// time. There may also be attributes whose values can be duplicated among entities -- date of birth, number of months a
+// subscriber, estimated net worth. All these examples are strings or numbers, so they have types that are totally ordered.
+// But in the collection, some of them are keys (in the database sense) and some aren't. Your extract function should return
+// a key, or if your collection doesn't have any single attributes that are keys it may be keyable with multiple attributes.
+
+// In an olist(T) there will be some
+// attribute (possibly more than one) that's unique to each entity -- an email address, account number, perhaps a creation
+// time. There may also be attributes whose values can be duplicated among entities -- date of birth, number of months a
+// subscriber, estimated net worth. Both the unique and non-unique things may be ordered. However, an extraction function that
+// returns the date of birth as an ordered type will _not_ turn T into an ordered type in the accounts list.
+// When $< is defined on numbers or strings, it satisfies the total ordering predicate by definition but when we create a
+// collection of tuples, the truth of the total ordering predicate for any given ordered attribute depends on the collection. This
+// truth is reflected in the fact that when we create a new account, we check whether the email address is already used in
+// some existing account, or ther fact that if we use an account number for indexing the accounts, we take care to always
+// allocate new accounts from unused numbers.
+//
+// It's worth noting that olists are still lists in the sense that they allow duplicates, what's forbidden is duplications
+// of the oextract value on distinct elements. However, as a practical matter, olists tend to be most useful when used like
+// sets, i.e. without duplicates. This module supports this pattern in a few ways: insertIfUnique preserves a non-duplicates property,
+// and the lithook4Set method uses this one to construct a list without duplicates. Also, it defines the stmapping for olists as sets.
+//
+// We take this approach because the use case for non-total orders is limited, and coding for the more general case is
+// somewhat slower. Note that if you want some collection in an ordering that isn't total (such as on birth year), sort
+// works fine.
+val olist = \typegen(T::entity, U::ordered, oextract:\(T)->U) {
+	val OLT = extend tuple(private x: list(T)) where {
+		assert enumerable(x)
+		// this is the core binsearch algo; it's private but exported via index.
+		// returns index of greatest elt <= oelt or -1 if no such elt
+		private method indexA = \imp(oelt: U) {
+			if(x == [] || oextract(x.last) < oelt) { -1 }
+			else {
+				var mn = 0, mx = x.count-1, cur = mx/2
+				while(mn <= mx) {
+					val ocur = oextract(x[cur])
+					if(ocur < oelt) mn = cur+1
+					else if(ocur == oelt) break
+					else mx = cur-1
+					cur = mn + (mx - mn)/2
+				}
+				cur
+			}
+		}
+
+		// provides direct access to what binary search returns. But use it carefully since any insert or remove
+		// can change the index.
+		method index = \(oelt: U) { indexA(oelt) }
+		method insert = \mod(elt: T) {
+			val inx = indexA(oextract(elt))
+			if(inx < 0) x.pushb(elt)
+			else x.insert(inx, elt)
+		}
+		// returns "unless(elt in self) insert(elt)", hand written because compiler doesn't do it well enough yet
+		method insertIfUniq = \mod(elt: T) {
+			val inx = indexA(oextract(elt))
+			if(inx < 0) x.pushb(elt)
+			else if(x[inx] != elt) x.insert(inx, elt)
+		}
+		// Standard constructor: allow dups
+		method lithook = \mod(elts: list(T)) {
+			each(e^elts) self.insert(e)
+		}
+		// Non-standard constructor: can restrict dups. This is a bit nonsensical, it only makes sense with noDups set to true.
+		// But optional args don't work in method decls yet so this is a way to get a TC-distinct lithook.
+		method lithook = \mod(elts: list(T), noDups: boolean) {
+			if(noDups) each(e^elts) self.insertIfUniq(e)
+			else each(e^elts) self.insert(e)
+		}
+		method count = \() { x.count }
+		// removes the element, does nothing if element isn't present.
+		method remove = \mod(elt: T) {
+			val inx = indexA(oextract(elt))
+			if(inx >= 0 && x[inx] == elt) x.removeIndex(inx)
+		}
+		// Tells if the given elt is in the olist (only correct if $< is a total order)
+		method $in = \(elt: T) -> boolean {
+			val inx = indexA(oextract(elt))
+			inx >= 0 && x[inx] == elt
+		}
+		// Is like $in but only tests the key
+		method keyIn = \(oelt: U) -> boolean {
+		    val inx = indexA(oelt)
+		    inx >= 0 && oextract(x[inx]) == oelt
+		}
+		// Returns the (first) elt whose oextract is oelt, or nil
+		method get = \(oelt: U) -> nilPossible(T) {
+		    val inx = indexA(oelt)
+		    if(inx >= 0 && oextract(x[inx]) == oelt) x[inx] else nil
+		}
+		// Is same as get except you know the match will succeed
+		method getOK = \(oelt: U) { always(aa~get(oelt), aa != nil) }
+
+		// returns the greatest list elt <= T or nil if either list is empty or T is < the first elt of the list.
+		method before = \(elt: T) {
+		    val oelt = oextract(elt)
+		    if(x.count == 0 || oelt < oextract(x.head)) nil
+		    else if(oextract(x.last) < oelt) x.last
+		    else { val einx = indexA(oelt); if(x[einx] == oelt) x[einx] else if(einx > 0) x[einx-1] else nil }
+		}
+		// returns the least list elt >= T or nil if either list is empty or T is > the last elt of the list.
+		method after = \(elt: T) {
+		    val oelt = oextract(elt)
+		    if(x.count == 0 || oextract(x.last) < oelt) nil
+		    else x[indexA(oelt)]
+		}
+		// can be helpful for types that use olists; any mod operation invalidates the value retrieved here.
+		method rvalindex = \(inx: integer) { x[inx] }
+
+		// produces self - other, ie elts in self and not in other, in the manner of the set operation.
+		method diff = \imp(other: OLT) {
+            var rsltX: list(T) = []     // rsltX will be ordered but not declared as such
+            if(x.count > other.count) {
+                // here, delete elements of other from a copy of self
+                rsltX = copy(x)
+                if(other.count > 0) {
+                    var inx = indexA(oextract(other[0]))        // inx is indexA in self of other[oinx]
+                    var oinx = 0
+                    if(inx >= 0) {
+                        loop {
+                            if(other[oinx] == rsltX[inx]) rsltX.removeIndex(inx)
+                            oinx += 1
+                            if(oinx >= other.count) break
+                            while(oextract(rsltX[inx]) < oextract(other[oinx]) && inx < rsltX.count) inx += 1
+                            if(inx == rsltX.count) break
+                        }
+                    }
+                }
+            } else {
+                // here, x.count <= other.count so build up from empty
+        		var inx = 0
+                if(other.count > 0) {
+                    var xoInx = indexA(oextract(other[0]))
+                    var oinx = 0
+                    if(xoInx < 0 || xoInx == x.count) rsltX = copy(x)       // no ovlp, so no need to scan
+                    else {
+                        rsltX.append(x[inx...xoInx])
+                        inx = xoInx
+                        loop {
+                            val key1 = oextract(x[inx])
+                            while(oinx < other.count && oextract(other[oinx]) < key1) oinx += 1
+                            if(oinx < other.count && x[inx] != other[oinx]) rsltX.pushb(x[inx])
+                            inx += 1
+                            if(inx >= x.count) break
+                            val key2 = oextract(x[inx])
+                            while(oinx < other.count && oextract(other[oinx]) < key2) oinx += 1
+                            if(oinx >= other.count) break
+                        }
+                    }
+                }
+            }
+            var rslt: OLT = []
+            rslt.x = rsltX          // smash
+            rslt
+		}
+
+		// contains(self, other) is true just in case every elt of other is in self. IOW, "other subset self" for sets.
+		method contains = \imp(other: OLT) {
+		    if(other.count == 0) return true
+            var ocur = other[0]
+            var oinx = 1
+            var sinx = indexA(oextract(ocur))
+            loop {
+                if(sinx < 0 || sinx >= self.count || x[sinx] != ocur) return false
+                if(oinx == other.count) break
+                ocur = other[oinx]
+                oinx += 1
+                sinx += 1
+                while(sinx < x.count && x[sinx] != ocur) {
+                    if(oextract(ocur) <= oextract(x[sinx])) return false
+                    sinx += 1
+                }
+            }
+            true
+		}
+
+		// removes last element which will be max according to the ordering. Note that this is nilPossible
+		method popb = \mod() { x.popb }
+
+		// removes first element which will be min according to the ordering. Note that this is nilPossible
+		method popf = \mod() { x.popf }
+
+		// first element is min according to the ordering. Note that this is nilPossible
+		method minelt = \() -> nilPossible(T) { x.head }
+
+		// last element is max according to the ordering. Note that this is nilPossible
+		method maxelt = \() -> nilPossible(T) { x.last }
+	}
+	OLT
+}
+
+// Olist0 simply instantiates olist.
+val olist0 = \typegen(T0::ordered) { olist(T0, T0, \(t: T0) {t}) }
+
+// The following causes the given STMap to be defined as soon as olist and set are both in the bdgenv.
+// Note that the clever (and O(N)) version of equality is not mapped here, so a set mapped to olist will use
+// the naive (and O(N^2)) equality checking algo in the defn of set. Why? The issue has to do with whether the
+// oextract fn is injective or not. If it is, then the ordering of the olist is total. If not, then elts equiv 
+// under oextract can be in any order in the olist so equality checking has to find such equiv elts (which will 
+// be adjacent in the olist) and check them for equality with the naive algo. The clever algo is elegantly written:
+//     method eq = \(other:set(T0)) { other.count = self.count && all([s~x, o~other].xp.{s = o}) }
+// Obviously, the version with proper equiv class checking can be written. In my opinion, the clearest way to 
+// write it is imperative and it'll definitely be longer and harder to understand than the above. 
+// Eventually, when manifest works as specified, I could define the equality predicate condition on injectiveness 
+// of oextract. That's the proper solution. 
+oncondition defined(set, type) {
+    given(T0::entity, OT::ordered, fn:\(T0)->OT, y: T0, yl: list(T0), ys: set(T0)) {
+        STMap {
+            source = set(T0)
+            target = olist(T0, OT, fn)
+            direct count, $in
+            self.lithook(yl) => lithook(self, yl, true)
+            self.add(y) => self.insertIfUniq(y)
+            self.remove(y) => self.remove(y)
+            self.subset(ys) => self.contains(cast(ys, target))
+            enumerable(self) => self
+        }
+    }
+    given(OT::ordered, y:OT, yl: list(OT), ys: set(OT)) {
+        STMap {
+            source = set(OT)
+            target = olist0(OT)
+            direct count, $in
+            self.lithook(yl) => lithook(self, yl, true)
+            self.add(y) => self.insertIfUniq(y)
+            self.remove(y) => self.remove(y)
+            self.subset(ys) => self.contains(cast(ys, target))
+            enumerable(self) => self
+        }
+    }
+}
+export olist, olist0

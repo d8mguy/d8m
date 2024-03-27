@@ -1,0 +1,11 @@
+import "sort"
+import go "math/rand"
+val tupT = tuple(x,y: float)
+val trysort = \imp() {
+    val randx = rand.New(rand.NewSource(1))
+    val cmpIn = \(a,b: tupT) { a.x <= b.x }
+    val cmpFn = \(a,b: tupT) { a.x < b.x }
+    var rantups = (1..500).{ [tupT: randx.Float64()*500.0 - 250.0, randx.Float64()*500.0 + 250.0] }
+    inOrder(sort.modsort(rantups, cmpFn), cmpIn)
+}
+trysort()

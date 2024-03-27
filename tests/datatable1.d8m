@@ -1,0 +1,49 @@
+// test the dataTable module with a single datascheme involving 4 params and 3 xparams. Use a synthetic file generator
+// to get predictable values in the files, run 4 variants of the params to extract to test various cases.
+
+import "dataTable" as csv
+import "strings"
+import "combics" melted
+
+val params = [
+    [csv.paramT: "P1", "", "", ["e00", "e01", "e02", "e03", "e04"], true, true],
+    [csv.paramT: "P2", "", "", ["e10", "e11"], true, true],
+    [csv.paramT: "P3", "", "", ["e20", "e21", "e22"], true, true],
+    [csv.paramT: "P4", "", "", ["e30", "e31", "e32", "e33", "e34", "e35"], true, true]]
+val xParams = [
+    [csv.paramT: "X1", "", "", ["x00", "x01", "x02", "e03", "e04"], true, true],
+    [csv.paramT: "X2", "", "", ["x10", "x11", "x12", "e13"], true, true],
+    [csv.paramT: "X3", "", "", ["x20", "x21"], true, true]]
+val outputs = ["o1", "o2", "o3", "o4"]
+// For synth, the fnm is the wanted output for this "file"; synthDatatable1 is specialized for the above
+// params; it returns a table of the 4 params and 4 outputs where the output values tell xparam values
+val synthDatatable1 = \imp(fnm: string) -> csv.rowcolT {
+    var rownum = 0
+    var pStrm = [streamIndices: params.{ elts.count }]
+    var rslt: csv.rowcolT = []
+    while(!pStrm.done) {
+        var prms = pStrm.next.{ params[index].elts[this] }
+        val outs = outputs.{ strings.join([this, stringify(rownum), fnm], "/") }
+        rslt.pushb(prms.append(outs))
+        rownum += 1
+    }
+    rslt
+}
+val foo = \imp() {
+    var state = [csv.datascheme: [csv.fileFormat: params, outputs], synthDatatable1]
+    val fnames = map(i^0...5, j^0...4, k^0...2) strings.join([xParams[0].elts[i], xParams[1].elts[j], xParams[2].elts[k]], "")
+    state.update(xParams, fnames, "")
+    val rc0 = state.extract([2, -1, 2, 3, 0, -2, 0], [0], 2)
+    println("state.extract([2, -1, 2, 3, 0, -2, 0], [0], 2):", rc0)
+    val rc0b = state.extract([2, -1, 2, 3, 1, -2, 0], [0], 2)
+    println("state.extract([2, -1, 2, 3, 1, -2, 0], [0], 2):", rc0b)
+    val rc0c = state.extract([2, -1, 2, 3, 0, -2, 1], [0], 2)
+    println("state.extract([2, -1, 2, 3, 0, -2, 1], [0], 2):", rc0c)
+    val rc1 = state.extract([2, -1, 2, 3, 0, -2, 0], [0], 1)
+    println("state.extract([2, -1, 2, 3, 0, -2, 0], [0], 1):", rc1)
+    val rc2 = state.extract([2, -2, 2, 3, 0, -1, 0], [0], 2)
+    println("state.extract([2, -2, 2, 3, 0, -1, 0], [0], 2):", rc2)
+    val rc3 = state.extract([0, 1, -1, -2, 0, 2, 0], [1,2], 2)
+    println("state.extract([0, 1, -1, -2, 0, 2, 0], [1,2], 2):", rc3)
+}
+foo()

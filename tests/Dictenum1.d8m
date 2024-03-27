@@ -1,0 +1,12 @@
+// dictenum1
+import "dict" melted
+val pair = tuple(a, b: integer)
+val try = \mod(pr: pair) {
+    var d1 = [dict(integer, pair):]
+    d1[1] = pr
+    d1[4] = copy(pr)
+    pr.a = 12
+    println(d1.keys)
+    println(d1.values)
+}
+try([pair: 33, -5])

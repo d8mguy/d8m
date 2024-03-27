@@ -1,0 +1,36 @@
+// try a different datascheme from test 1
+import "dataTable" as csv
+import "strings"
+import "combics" melted
+
+val params = [
+    [csv.paramT: "P1", "", "", ["e00", "e01", "e02", "e03", "e04", "e05", "e06", "e07"], true, true]]
+val xParams = [
+    [csv.paramT: "X1", "", "", ["x00", "x01", "x02"], true, true]]
+val outputs = ["o1", "o2", "o3", "o4"]
+val synthDatatable1 = \imp(fnm: string) -> csv.rowcolT {
+    var rownum = 0
+    var pStrm = [streamIndices: params.{ elts.count }]
+    var rslt: csv.rowcolT = []
+    while(!pStrm.done) {
+        var prms = pStrm.next.{ params[index].elts[this] }
+        val outs = outputs.{ strings.join([this, stringify(rownum), fnm], "/") }
+        rslt.pushb(prms.append(outs))
+        rownum += 1
+    }
+    rslt
+}
+val foo = \imp() {
+    var state = [csv.datascheme: [csv.fileFormat: params, outputs], synthDatatable1]
+    val fnames = (0..2).{ "x0#{this}" }
+    state.update(xParams, fnames, "")
+    val rc0 = state.extract([-1, -2], [0], 1)
+    println("state.extract([-1, -2], [0], 1):", rc0)
+    val rc1 = state.extract([-2, -1], [0], 1)
+    println("state.extract([-2, -1], [0], 1):", rc1)
+    val rc2 = state.extract([-1, -2], [0], 2)
+    println("state.extract([-1, -2], [0], 2):", rc2)
+    val rc3 = state.extract([-2, -1], [0], 2)
+    println("state.extract([-2, -1], [0], 2):", rc3)
+}
+foo()

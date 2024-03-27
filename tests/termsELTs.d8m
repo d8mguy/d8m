@@ -1,0 +1,46 @@
+// termsELTs: test multiple ELTs named types and various Term related code fragments
+import "term" melted
+import "strings"
+val actions = label(:must, :optional, :visit, :start, :starttkn, :reduce, :suppress)
+val wgBaseTypes = label(:integer, :float, :string, :boolean, :label, :submitter, :any, :error)
+val vpair = extend tuple(tkn: string, stateinx: integer) where {
+    method stringify = \() { "V[#{tkn}: #{stateinx}]"}
+}
+val actionItem = extend tuple(action: actions, v: ortype(m: string, inx: integer, v: list(vpair))) where {
+    method asString = \() { always(x~self.v, tag(x) == :m) }
+    method asIndex = \() { always(x~self.v, tag(x) == :inx) }
+    method asVisits = \() { always(x~self.v, tag(x) == :v) }
+    method stringify = \() {
+        val innards = case {
+            action == :must || action == :start || action == :starttkn || action == :reduce || action == :suppress => self.asString
+            action == :optional => stringify(self.asIndex)
+            action == :visit => strings.join(self.asVisits.{stringify(this)}, ",")
+        }
+        "[#{action}:#{innards}]"
+    }
+}
+val string2WGBase = \(s:string) -> wgBaseTypes {   // string to ELT translation fn for wgBaseTypes
+    val inx = ["integer", "float", "string", "boolean", "label", "submitter", "any"][this == s => index]
+    if(inx == nil) :error else cast(inx, wgBaseTypes)
+}
+val wgType = extend tuple(leaf:wgBaseTypes, lists:integer) where {
+    method lithook = \mod(trm: Term) {
+        lists = 0
+        var cur = trm
+        while(cur.kind == "listx") { cur = cur.child0; lists += 1 }
+        leaf = string2WGBase(asString(cur))
+    }
+}
+val bdgpt = extend tuple(ident: string, typ:wgType) where {
+    method lithook = \mod(trm: Term) {
+        ident = asString(trm.child0)
+        typ = [wgType: trm.child1]
+    }
+}
+val foo = \imp() {
+    val trm0 = [Term: "colonpair", [[Term: "ident", "yyy", 0], [Term: "listx", [[Term: "ident", "label", 0]], 0]], 0]
+    val bp1 = [bdgpt: trm0]
+    val ai1 = [actionItem: :optional, 12]
+    println(ai1, bp1)
+}
+foo()

@@ -1,0 +1,112 @@
+// This module provides access to a subset of the ftns in the corresponding go pkg, plus a few others.
+// In particular, it includes some of the basic byte-based character range checks.
+
+
+import go "bytes" as gb
+
+export split, join, strip, index, toLower, toUpper, toCap, upper, lower, digit, alpha, alphanum,
+    hexdigit, spacetab, toHex, toLiteral, transformSingleSingle, transformSingleMulti, transformMultiMulti
+
+
+// split, join, toLower, and toUpper just call the bytes package functions
+val split = \(self, sep: list(byte)) -> list(list(byte)) { gb.Split(self, sep) }
+val join = \(strgs: list(list(byte)), inter: list(byte)) -> list(byte) { gb.Join(strgs, inter) }
+val toLower = \(lb: list(byte)) -> list(byte) { gb.ToLower(lb) }
+val toUpper = \(lb: list(byte)) -> list(byte) { gb.ToUpper(lb) }
+
+// Index just calls gb.Index, preserving its use of -1 as the fail value.
+val index = \(lb, of: list(byte)) -> integer { gb.Index(lb, of) }
+
+// Return a copy of lb with its first char capitalized; use gb.ToUpper for this.
+val toCap = \imp(lb: list(byte)) -> list(byte) { var lb0 = copy(lb); val u = gb.ToUpper(lb[0...1]); lb0[0] = u[0]; lb0 }
+
+// Create a 3-character string that designates b in d8m text, including the single quotes.
+// This doesn't do escapes, nonprintable bytes, etc. For example, `toLiteral(97)` (the ascii value for lower case 'a')
+// is `"'a'"`.
+val toLiteral = \imp(b: byte) -> string {
+    var rslt: list(byte) = zerolist(3)
+    rslt[0] = '\''
+    rslt[2] = '\''
+    rslt[1] = b
+    cvt(rslt, string)
+}
+
+// Copy a given list(byte) and substitute bytes for corresponding bytes.
+// For example, if from, to are ['\r'], ['\n'] you'd change all carriage returns to linefeeds.
+// It is required that from.count == to.count, ie there must be a "to" byte for each "from" byte.
+val transformSingleSingle = \imp(contents: list(byte), from: list(byte), to: list(byte)) -> list(byte) {
+    var rslt = copy(contents)
+    each(x^rslt, inx0) {
+        val inx1 = from.index(x)
+        if(inx1 != nil) rslt[inx0] = to[inx1]
+    }
+    rslt
+}
+
+// Copy a given list(byte) and substitute one or more list(byte) for corresponding bytes.
+// For example, if from, to are ['-'], [[cvt("&mdash;", list(byte))]] you'd change all dashes to the string "&mdash;"
+// __Attention:__ this may fail if any byte of `from` occurs in `to`. Because we search in the copy, which is also
+// changing with each substitution.
+//
+// It is required that from.count == to.count, ie there must be a "to" list(byte) for each "from" byte.
+val transformSingleMulti = \imp(contents: list(byte), from: list(byte), to: list(list(byte))) -> list(byte) {
+    var rslt = copy(contents)
+    val ccnt = contents.count
+    each(i^1..ccnt) {
+        val inx = from.index(rslt[ccnt-i])
+        if(inx != nil) rslt.insert(ccnt-i, to[inx])
+    }
+    rslt
+}
+
+// Copy a given list(byte) and substitute one or more list(byte) for corresponding list(byte).
+// For example, if from, to are [['-', '-']], [[cvt("&mdash;", list(byte))]] you'd change all "--" to "&mdash;"
+// __Attention:__ this may fail if any complete element of `from` occurs as a sub-sequence of any element of `to`.
+// Because we search in the copy, which is also changing with each substitution.
+//
+// It is required that from.count == to.count, ie there must be a "to" list(byte) for each "from" list(byte).
+val transformMultiMulti = \imp(contents: list(byte), from, to: list(list(byte))) -> list(byte) {
+    var rslt = copy(contents)
+    val ccnt = contents.count
+    each(i^1..ccnt) {
+        var foundAt = -1
+        each(ptn^from, inx) if(ptn.count <= i && ptn == rslt[ccnt-i...ptn.count+ccnt-i]) { foundAt = inx; break }
+        if(foundAt >= 0) { val ptn = from[foundAt]; rslt.removeSeq(ccnt-i, ptn.count+ccnt-i); rslt.insert(ccnt-i, to[foundAt]) }
+    }
+    rslt
+}
+
+
+// Various predicates on byte args.
+
+// True if b is uppercase
+val upper = \(b: byte) { 'A' <= b && b <= 'Z' }
+
+// True if b is lowercase
+val lower = \(b: byte) { 'a' <= b && b <= 'z' }
+
+// True if b is a digit
+val digit = \(b: byte) { '0' <= b && b <= '9' }
+
+// True if b is alphabetic (or '_')
+val alpha = \(b: byte) { upper(b) || lower(b) || b == '_' }      // note that alpha includes '_'
+
+// True if b is alphanumeric
+val alphanum = \(b: byte) { alpha(b) || digit(b) }
+
+// True if b is a hex digit
+val hexdigit = \(b: byte) { digit(b) || ('A' <= b && b <= 'F') || ('a' <= b && b <= 'f') }
+
+// True if b is space or tab
+val spacetab = \(b: byte) { b == '\t' || b == ' ' }
+
+// Arg should be a hex digit, i.e. a digit or alpha char between A and F. Return the digital value in hex coding.
+val toHex = \(b: byte) -> integer { if(digit(b)) b - '0' else if('A' <= b && b <= 'F') b - 'A' else b - 'a' }
+
+// Arg is a string as list(byte) and a list(byte) of characters to remove, return a copy of the string without those characters.
+val strip = \imp(strg: list(byte), rmv: list(byte)) {
+	var rslt: list(byte) = []
+	each(b^strg) unless(b in rmv) rslt.pushb(b)
+	rslt
+}
+

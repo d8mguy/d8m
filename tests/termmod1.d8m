@@ -1,0 +1,13 @@
+// termmod1. Check that adding an item to a variant list works.
+// See notes around 08/17/22 and 09/09/22. D8m semantics says that the pushb to fcptArgs should affect trm.arg since
+// they're the same entity. This can work by taking pointers but you can't take pointers to an interface type in go.
+// A hack in pass1 of cleanup causes fcptArgs to be substd by its binding so this test works. But it's not a completely
+// correct implementation.
+import "term" melted
+var trm1 = [Term: "aaa", [[Term: "bbb", "ccc", 0]], 0]
+val foo = \mod(trm: Term) {
+    var fcptArgs = asTerms(trm)
+    fcptArgs.pushb([Term: "children", "the", 0])
+    trm
+}
+foo(trm1)

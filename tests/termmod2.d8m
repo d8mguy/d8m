@@ -1,0 +1,28 @@
+// termmod2. Check that adding an item to a variant list works, this time on a 3-variant version of Term
+// See notes for termmod1; this has the same issues.
+import "strings"
+val Term: type = extend tuple(kind: string, arg: ortype(terms: list(Term), strg: string, test:integer)) where {
+    // Note a subtlety: this is recursive so the rettype must be explicit
+    method stringify = \() -> string {
+        val args = case arg {
+        string => arg
+        integer => stringify(arg)
+        list(Term) => strings.join(arg.{stringify(this)}, ";")
+        }
+        "[#{kind}: #{args}]"
+    }
+    method asString = \() { always(x~self.arg, tag(x) == :strg) }
+    method asTerms = \() { always(x~self.arg, tag(x) == :terms) }
+    method child0 = \() { asTerms(self)[0] }
+    method child1 = \() { asTerms(self)[1] }
+    method child2 = \() { asTerms(self)[2] }
+    method childN = \(n:integer) { asTerms(self)[n] }
+    method asLeaf = \() { asString(self.child0) }       // get the value of a leaf node
+}
+var trm1 = [Term: "aaa", [[Term: "bbb", "ccc"]]]
+val foo = \mod(trm: Term) {
+    var fcptArgs = asTerms(trm)
+    fcptArgs.pushb([Term: "children", "the"])
+    trm
+}
+foo(trm1)

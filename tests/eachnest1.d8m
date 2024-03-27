@@ -1,0 +1,7 @@
+// eachnest1
+val foo = \imp(n: integer) {
+    var sum = 0
+    each(i^0...n, j^i+1...n) sum += i*j
+    sum
+}
+foo(10)

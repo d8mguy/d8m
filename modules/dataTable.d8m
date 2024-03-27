@@ -1,0 +1,285 @@
+// Module dataTable lets you manipulate 2d data tables in files or other generators, and do cube projections on the 2d data in memory.
+// This version treats 2d data as `list(list(string))`, in other words data is uninterpreted.
+// Arbitrary dimensions can be held in a single data table, and related data tables can hold data for more dimensions.
+// A `paramT` defines a dimension for data. So files hold one or more dimensions in their output column and may or may not
+// list the values of the parameters in the files themselves. All this is described in a `fileFormat`, which is held in a
+// `datascheme`. The `fileFormat` describes the format of a single file.
+    // Besides the `fileFormat`, a `datascheme` holds a list of "xparams" and a function called dataGetter. The
+// xparams describe the dimensions that are split across files, one element per file. The caller is responsible for assigning
+// how filenames map to these elements, datascheme calls the dataGetter with the filenames supplied by the user and caches
+// the contents. The name "dataGetter" is meant to emphasize that the "filename" can be any sort of descriptor; the source
+// of data could be a URI/URL or anything convenient.
+//
+// Besides the relevant types and their methods, dataTable exports `stdFileGetter` which you can use as a dataGetter for
+// local files having a particularly simple format.
+
+
+import "combics"
+import "file"
+import "bytes"
+import "strings"
+
+
+export datascheme, paramT, fileFormat, stdFileGetter, rowcolT
+
+// A rowcolT is just a list(list(string)) with a couple of useful methods. The outer list holds rows, so cols are inner.
+val rowcolT = extend list(list(string)) where {
+    // Given a number of initial columns that are values for row encoded param, assumed in lexicographic order (column 0 varying slowest), return
+    // a list(list(string)) with outer list indexed by param and inner lists being extracted lists of values.
+    // Code assumes nparams > 0
+    method extractParameters = \imp(nparams: integer) -> rowcolT {
+        if(nparams == 1) return [self.{ this[0] }]
+        var rslt: rowcolT = []
+        var curprm = nparams - 2, stride = 1
+        while(curprm >= 0) {
+            val c0 = self[0][curprm]
+            var rpts = 0, inx = 0, elts: list(string) = []
+            while(self[inx][curprm] == c0) { rpts += 1; elts.pushb(self[inx][curprm+1]); inx += stride }
+            rslt.pushb(elts)
+            stride *= rpts
+            curprm -= 1
+        }
+        rslt
+    }
+
+    // Do the same thing as extractParameters but check consistency instead of extracting element values.
+    // The consistency checking that's done is to verify that the values in the first N cols (N=# of params) repeat in
+    // the way dictated by enumerating those parameters lexicographically.
+    // Return a string describing the first problem found in the encoding, "" if no problem found.
+    // This works a lot harder than extractParameters; call it if you have any doubts about the integrity of your data source.
+    method checkParameterEncoding = \imp(nparams: integer) -> string {
+        // Note that there's nothing to detect if a single param
+        if(nparams <= 1) return ""
+        var rslt: rowcolT = []
+        var curprm = nparams - 2, stride = 1
+        // work bkwds through the params, record values and ensure they repeat at the right places.
+        while(curprm >= 0) {
+            val c0 = self[0][curprm]
+            var rpts = 0, inx = 0, elts: list(string) = []
+            while(self[inx][curprm] == c0) { rpts += 1; elts.pushb(self[inx][curprm+1]); inx += stride }
+            rslt.pushb(elts)
+            // check the rest of the rows to verify they have the same pattern of repeats
+            while(inx < self.count) {
+                each(elt^elts, inx0) unless(self[inx + inx0*stride][curprm+1] == elt) return "match fail in row #{inx + inx0*stride}, col #{curprm+1}"
+                inx += rpts * stride
+            }
+            // todo: consider if I need a check on #rows
+            stride *= rpts
+            curprm -= 1
+        }
+        ""
+    }
+
+    // This is used when reading a file into the cache. It returns a non-empty string if there is a problem.
+    method checkCounts = \(filename:string, xR, xC: integer) -> string {
+        val colcounts = self.{this.count}.uniq
+        if(self.count == 0) "file #{filename} is empty"
+        else if(self.count == xR && colcounts.count == 1 && colcounts[0] == xC) ""
+        else "format of #{filename}: expected #{xR}*#{xC} but got #{self.count}*#{colcounts[0]}"
+    }
+
+}
+
+// describes the parameters encoded in a file: ident suitable as a label and descrn as a longer explanation; unit optional,
+// elts enumerates the values this parameter takes in the file. The two booleans describe whether and how this parameter
+// occurs in the file: if explicit then must be row encoded; if implicit can be encoded in either row or cols (the latter
+// if rowEncoded is false). Another constraint on these encodings: all implicit column encoded params must occur after row
+// encoded ones. All these constraints are checked in the fileFormat constructor.
+val paramT = tuple(ident, descrn, unit: string, elts: list(string), rowEncoded:boolean, explicit: boolean)
+
+// Datascheme has a dataGetter:\(string)->rowcolT attribute; stdFileGetter is a simple example of a suitable function.
+// Given a path to a csv file with lines split on \n, no quotation, extra spaces, or extra lines, [open, read, close]
+// the file, split and return contents.
+val stdFileGetter = \imp(fnm: string) -> rowcolT {
+    var fd = file.openBasic(fnm)
+    val buff: list(byte) = zerolist(fd.size())
+    if(buff.count == 0) exit("can't handle empty file")
+    fd.read(buff)
+    fd.close()
+    val rows = bytes.split(buff, ['\n'])
+    var splitrows = rows.{ bytes.split(this, ",").{ cvt(this, string) } }
+    // The bytes.Split ftn is pretty lame with a final newline, which is pretty common, it creates an extra line with an empty string
+    // This is tricky to get rid of, so I'm taking a shortcut
+    if(buff[buff.count-1] == '\n') splitrows = splitrows[0...splitrows.count - 1]
+    cast(splitrows, rowcolT)
+}
+
+// A file has R rows and C cols where C = params.count + outputs.count, R = reduce(params.{elts.count}, $*, 1).
+val fileFormat = extend tuple(params: list(paramT), outputs: list(string)) where {
+    method lithook = \mod(prms: list(paramT), outs: list(string)) {
+        if(any(prms.{explicit && !this.rowEncoded})) exit("file format has paramT's with illegal combination of booleans")
+        val colEnc0 = prms[!this.rowEncoded => index]
+        if(colEnc0 != nil && prms[colEnc0...prms.count][this.rowEncoded] != nil) exit("row encoded parameters may not occur after column encoded ones")
+        params = prms
+        outputs = outs
+    }
+    // This will be the number of columns needed to record the values of all column encoded params.
+    method colEncodedCount = \() -> integer {
+        val colEnc0 = params[!this.rowEncoded => index]
+        outputs.count * (colEnc0 == nil ? 1 : reduce(params.[index >= colEnc0].{elts.count}, $*, 1))
+    }
+    method firstOutputIndex = \() -> integer { params.[explicit].count }
+    method nCols = \() -> integer { colEncodedCount() + firstOutputIndex() }
+    method nRows = \() -> integer { reduce(params.[rowEncoded].{ elts.count }, $*, 1) }
+}
+
+// A `datascheme` allows for extending a `fileFormat` across multiple "files" related by "xtparams" (external params); the
+// `dataGetter` parameterizes the process of retrieving a data table. Internal to `datascheme` we manage a caching scheme so
+// that the dataGetter is called at most once for each distinct filename.
+// Note that xtparams is private to encourage you to change it only via `update`. Also, that an earlier design contemplated
+// using a function/streamer to generate the correct sequence of filenames to pass to dataGetter but that in the end it
+// was easier to provide a list of filenames.
+val datascheme = extend tuple(filefmt: fileFormat, private xtparams: list(paramT), dataGetter: \(string)->rowcolT) where {
+    private attribute filenames: list(string)
+    private attribute fnPrefix: string
+    private attribute cache: list(nilPossible(rowcolT))
+
+    // Construct without xtparams then use update method to add xtparams, etc.
+    method lithook = \mod(ffmt: fileFormat, dg: \(string)->rowcolT) { filefmt = ffmt; dataGetter = dg }
+
+    method xparamsCount = \() { xtparams.count }
+
+    // Provides unified access to elt counts for params and xtparams. Sanity checking must be done before calling this.
+    private method allParamsEltCounts = \(pInx: integer) {
+        val nParams = filefmt.params.count
+        if(pInx < nParams) filefmt.params[pInx].elts.count else xtparams[pInx - nParams].elts.count
+    }
+
+    // Changes xtparams and corresponding file related things.
+    method update = \mod(xtprms:list(paramT), fnms:list(string), fpfx: string) -> nothing {
+        xtparams = xtprms
+        filenames = fnms
+        fnPrefix = fpfx
+//        println("update sets filenames to ", fnms)
+        // it would be possible to try to save cached items with the same filename but it's simpler (& less code) to start over
+        cache = (1..fnms.count).{ cast(nil, nilPossible(rowcolT)) }
+    }
+    assert noInline(update)
+
+    // Returns the string value of the data point indicated by the args, handling cache misses as needed.
+    // Todo: extend this to handle reading col encoded params.
+    private method datum = \mod(file, row, col, xpectRows, xpectCols: integer) {
+        var fcontents = cache[file]
+        if(fcontents == nil) {
+            val fnm = filenames[file]
+            fcontents = dataGetter(fnPrefix + fnm)
+            assert fcontents != nil
+            val errmsg = fcontents.checkCounts(fnm, xpectRows, xpectCols)
+            if(errmsg != "") exit(errmsg)
+            cache[file] = fcontents
+        }
+        fcontents[row][col]
+    }
+    assert purified(datum)
+
+    // Produces a data table of strings from a spec for extraction from self. The spec comes from 3 args: `pIndices` is
+    // a list of integers where >= 0 means that index in the corresponding param or xtparam and < 0 means the corresponding
+    // param or xtparam is enumerated
+    // in the output. Negative numbers should all be distinct and contiguous; their absolute magnitude sets the
+    // order of enumerated params in the output, aka "multis". Outputs tell which outputs of the scheme are produced. The numbers in this
+    // argument index the outputs slot of filefmt.outputs. To get the columns of the file where the data lives, we
+    // need to add the # of params, since those are listed in the first cols.
+    // Furthermore, extract can encode param values in cols of the output.
+    // The colThresh tells where to do this. It is a positive integer, we require colThresh <= the number of multis.
+    // For example, given pIndices = [1, -1, -3, 4, -2] and colThresh = 2. There are a total of 5 params+xtparams. We
+    // extract three of these, namely the ones at index 1, 2, and 4 in the concatentation of params and xtparams. In the
+    // output, we order the extracted dimensions with 1 in rows, 2 and 4 in cols, with 2 innermost. So if, for example,
+    // there are two outputs], param 2 has 3 elements and param 4 has 2 elements, then there will be 2*3*2 output columns.
+    // The order will be o02040, o12040, o02140, o12140, o02240, o12240, o02041, o12041, etc. The number of rows will equal
+    // the number of elts in params 1. Whether multiple files are involved depends on where the boundary of params and xtparams
+    // is. For example, if there are 3 params, then the -2 in pIndices concerns the 2nd xparam. We just assumed it has 2 elts
+    // so we'll be cycling between 2 files as we generate cols.
+    method extract = \imp(pIndices, outputs: list(integer), colThresh: integer) -> rowcolT {
+        //println("start extract:", filefmt.params, pIndices, outputs)
+        // Multis are indices of concatenated params and xtparams dimensions: multis[0] = pIndices[this == -1 => index], etc.
+        // So multis.count is the #multidims.
+        var multis:list(integer) = zerolist(max(pIndices.{-this}, 0))
+        var multisCounted = 0       // we'll vfy that enumd indices are contig by ensuring this count equals multis.count
+        val nParams = filefmt.params.count, nXParams = xtparams.count
+        // First, do some sanity checks, panic on any error
+        unless(pIndices.count == nParams + nXParams) exit("wrong number of indices to extract (got #{pIndices.count} but expected #{nParams+nXParams}")
+        each(pInx^pIndices, inxInIndices) {
+            if(pInx < 0) { multis[-(pInx+1)] = inxInIndices; multisCounted += 1 }
+            else if(inxInIndices < nParams) { unless(pInx < filefmt.params[inxInIndices].elts.count) exit("arg #{inxInIndices} binding out of range") }
+            else { val nXpelts = xtparams[inxInIndices - nParams].elts.count; unless(pInx < nXpelts) exit("xp arg #{inxInIndices - nParams} binding out of range") }
+        }
+        if(colThresh > multisCounted) exit("extract: colThresh range error")
+        if(multis.count != multisCounted) exit("extract: pIndices has missing or duplicated negative values")
+
+        // The args are ok. Set up the various state machines that we'll run to generate output.
+        // Separately for both params and xtparams, we get elt counts, calculate accumulated weights (need to reverse first
+        // because of how accumulate works), then drop the total product, which isn't needed an lines up our indices correctly.
+        // The increments of enumerated params come directly from the corresponding weight (of the params after it); the
+        // initial offset, which is incremented modularly for each datapoint access, is the dot product of the weights with
+        // the offsets of each param, enumerated params set to zero. Exactly the same logic applies to xtparams, except that
+        // they concern fileIndex instead of rowOffset.
+        val paramCounts = reverse(filefmt.params.{ this.elts.count })
+        // Accumulate puts the total product at index 0, so we strip the first elt
+        val paramWghts = reverse(paramCounts.accumulate($*, 1))
+        val paramWghtsTail = paramWghts.[index >= 1]
+        val offsetsVect = pIndices.[index < paramWghtsTail.count].{ max(this, 0) }     // copy, setting neg elts to 0
+        var rowOffset = dotprod(paramWghtsTail, offsetsVect)
+        val xtparamCounts = reverse(xtparams.{ this.elts.count })
+        val xtparamWghtsTail = reverse(xtparamCounts.accumulate($*, 1)).[index >= 1]
+        val xtOffsetsVect = pIndices.[index >= paramWghtsTail.count].{ max(this, 0) }
+        var fileIndex = dotprod(xtOffsetsVect, xtparamWghtsTail)
+//        println("orig xptw", xtparamCounts, xtparamWghtsTail, xtOffsetsVect, fileIndex)
+//        println("multis:", multis)
+//        println("xpt=", xtparams, "paramWghtsTail", paramWghtsTail, "rowOffset:", rowOffset, "xtpwt:", xtparamWghtsTail, "xtov=", xtOffsetsVect, "fi", fileIndex)
+        // file enumeration arises from xtparams in multis
+        val multiCounts = multis.{ allParamsEltCounts(this) - 1 }
+        val outCols = outputs.{ this + filefmt.firstOutputIndex }
+        // The xFsmT represents the FSM we need. We need to bump fileIndex (for xtparams) or rowOffset (for regular params)
+        // by some fixed amount. So we code this in the incr slot: If incr > 0, add it to rowOffset, if < 0, bump
+        // fileIndex by neg of amt. The list(xFsmT) is run in nested fashion: run through the last one, then incr next to last and
+        // restart last, etc. Until first one is exhausted, at which point we're done. Same idea as combics.streamIndices
+        // but instead of incrg an index we run a FSM.
+        val xFsmT = extend tuple(cur, limit, incr, fcount: integer) where {
+            method done = \() { cur >= limit }
+            method restart = \mod() {
+                cur = 0
+                if(incr > 0) rowOffset -= limit*incr else { fileIndex += limit*incr; if(fileIndex < 0) fileIndex += fcount }
+            }
+            method next = \mod() {
+                //println("next:", incr, rowOffset, fileIndex)
+                if(incr > 0) rowOffset += incr else {
+                    fileIndex -= incr
+                    if(fileIndex >= fcount) fileIndex -= fcount
+                    else if(fileIndex < 0) fileIndex += fcount
+                }
+                cur += 1
+            }
+        }
+        var output: rowcolT = []
+        var curcol: list(string) = []
+        // We reverse the order for xtparams. I'm not sure this is right in all cases but it works for 1 substn+hmdim
+        // Possible that the right answer is to leave the substns in order and put the hmdim first
+//        println("multis=", multis, "multicounts=", multiCounts, "pwt=", paramWghtsTail, "xtpwt=", xtparamWghtsTail, "fi=", fileIndex, "ro=", rowOffset)
+        var nest = multis.{ [xFsmT: 0, multiCounts[index], this >= nParams ? -xtparamWghtsTail[this - nParams] : paramWghtsTail[this], filenames.count] }
+//        println("initial state", nest)
+        var level = nest.count - 1
+        val xpectRows = paramWghts[0]       // the xpect vbls are for sanity checking
+        val xpectCols = nParams + filefmt.outputs.count
+        loop {
+            each(colinx^outCols) curcol.pushb(datum(fileIndex, rowOffset, colinx, xpectRows, xpectCols))
+//            println("start incr, row=", rowOffset, "file=", fileIndex)
+            while(level >= 0 && nest[level].done) level -= 1
+            if(level < colThresh) {
+                output.pushb(curcol)
+//                println("push", curcol)
+                curcol = []
+            }
+            if(level < 0) break
+            nest[level].next
+//            println("set ", level, "to", nest[level])
+            while(level < nest.count - 1) {
+                level += 1
+                nest[level].restart
+//                println("restart", level)
+            }
+        }
+//        println("finish extract")
+        output
+    }
+
+}

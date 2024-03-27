@@ -1,0 +1,15 @@
+// toJson
+import "codecs/json" melted
+import go "math/rand"
+val innerT = tuple(a:integer, b:integer)
+val randx = rand.New(rand.NewSource(1))
+val dataT0 = tuple(xxx:innerT, yyy:list(float), wekrj:string, iue:integer)
+val dataT1 = tuple(xxx:list(innerT), yyy:list(float), zzz:string)
+val ait = [innerT: 12, 15]
+val aLF = (1..10).{ 2.71828 * randx.Intn(60) }
+val adt0 = [dataT0: ait, aLF, `a" string`, 34834]
+val adt1 = [dataT1: [ait, ait], aLF, `a" string`]
+var jstrm = [jsonStreamer: ""]
+val foo = \mod(js:jsonStreamer) { js.toJson(adt0); js.toJson(adt1); println(js.out()) }
+compile(foo(jstrm), :unroll~true)
+

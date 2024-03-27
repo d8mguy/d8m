@@ -1,0 +1,6 @@
+// mapindex
+val mitest = \(lst: list(integer)) {
+    val dbls = map(xx^lst, index) xx*2+index
+    sigma(dbls)
+}
+mitest([1,5,3,77,44])

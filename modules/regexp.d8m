@@ -1,0 +1,99 @@
+/*
+ * provide a d8m interface to go's regexp package
+ */
+import go "regexp" as rxpkg
+
+export regexpT, scanexpT
+
+// Create a regexpT with a string representing a regexp; it holds the internal ("compiled") version of same and
+// provides access methods to match entities typed as list(byte).
+val regexpT = extend tuple(private goptn: rxpkg.Regexp, strg: string) where {
+	method lithook = \mod(s: string) {
+		goptn = rxpkg.MustCompile(s)
+		strg = s
+	}
+	// Go Find returns []byte, with [] for no match. That's ambiguous with a pattern that matches the empty string, but
+	// you probably shouldn't use such a pattern.
+	method find = \(s: list(byte)) -> list(byte) { goptn.Find(s) }
+	// Note that although the go documentations says findIndex returns nil if not found, it actually returns [].
+	method findIndex = \(s: list(byte)) -> list(integer) { goptn.FindIndex(s) }
+	// the retvals from findAllIndices will have length 2 lists inner; this is inherited from go, doesn't seem worth redoing
+	method findAllIndices = \(s: list(byte)) -> list(list(integer)) { goptn.FindAllIndex(s, -1) }
+	method split = \(s: list(byte)) -> list(list(byte)) {
+		val matches = goptn.FindAllIndex(s, -1)
+		if(matches.count == 0) [s]
+		else {
+			// find the negative spaces between matches to select
+			val starts = [0] + matches.{this[1]}
+			val ends = matches.{this[0]} + [s.count]
+			[st~starts, ed~ends].xp.{ s.select(st, ed) }
+		}
+	}
+}
+
+// A scanexpT is analogous to a regexpT but scans multiple regexps, given in the constructor.
+// This assumes the given strings are mutually exclusive wrt matching, ie at most one can match.
+val scanexpT = extend tuple(private goptn: rxpkg.Regexp, strgs: list(string)) where {
+    // `ss` is a list of pattern strings which get wrapped in () and concatenated with | so as to make a
+    // single pattern that can be submatched and post-processing can find which pattern matched each part of the original.
+    method lithook = \mod(ss: list(string)) {
+        if(ss.count == 0) exit("scanexp requires at least one pattern")
+        val count1 = sigma(ss.{this.count})      // get length of all strings in ss
+        var concatd: list(byte) = zerolist(count1 + 3*ss.count - 1)
+        var inx = 0
+        val lastStrg = ss.last
+        each(strg^ss) {
+            concatd[inx] = '('; inx += 1
+            concatd.copyFrom(inx, strg)
+            inx += strg.count
+            concatd[inx] = ')'; inx += 1
+            if(strg != lastStrg) { concatd[inx] = '|'; inx += 1 }
+        }
+        goptn = rxpkg.MustCompile(cvt(concatd, string))
+        strgs = ss
+    }
+
+    // runs FindAllSubmatchIndex and process the result into a list of triples, the match indices plus index of submatch.
+    method scan = \imp(bytes: list(byte)) -> list(integer) {
+        val scanned = goptn.FindAllSubmatchIndex(bytes, -1)
+        // scanned is list(list(integer)) where each elt is length 2*(ss.count+1); the first 2 are the match indices
+        // and the others should be -1,-1 except for one pair which indicates the submatch that hit.
+        // Process that into triples.
+        var rslt: list(integer) = zerolist(scanned.count * 3)
+        each(mtch^scanned, inxRslt) {
+            rslt[inxRslt*3] = mtch[0]; rslt[inxRslt*3+1] = mtch[1]
+            each(i^(1...mtch.count/2)) if(mtch[i*2] != -1) { rslt[inxRslt*3+2] = i-1; break }
+        }
+        rslt
+    }
+
+    // done and next provide a way to scan a scanexpT incrementally.
+    method done = \(bytes: list(byte), ofs: integer) -> boolean {
+        goptn.FindSubmatchIndex(bytes[ofs...bytes.count]).count == 0
+    }
+
+    // returns a 3-elt list in the same format as scan, or an empty list if done
+    method next = \imp(bytes: list(byte), ofs: integer) -> list(integer) {
+        val match = goptn.FindSubmatchIndex(bytes[ofs...bytes.count])
+        if(match.count != 0)
+            each(i^(1...match.count/2)) if(match[i*2] != -1) return [ofs + match[i*2], ofs + match[i*2+1], i-1]
+        []
+    }
+
+    // The indices arg should have been returned from scan. Return index of the first non-whitespace byte between tokens
+    // or -1 if no such. Thus, -1 is the expected return if the tokens cover the line, except for whitespace.
+    method checkWhite = \imp(bytes: list(byte), indices: list(integer)) {
+        var lasttop = 0
+        var inx = 0
+        while(inx < indices.count) {
+            val inx0 = indices[inx]
+            while(lasttop < inx0) {
+                unless(bytes[lasttop] == ' ' || bytes[lasttop] == '\t') return lasttop
+                lasttop += 1
+            }
+            lasttop = indices[inx+1]
+            inx += 3
+        }
+        -1
+    }
+}

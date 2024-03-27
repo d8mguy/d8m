@@ -1,0 +1,7 @@
+// stream1
+import "combics" melted
+val tryMIstrm = \imp(lst: list(integer)) {
+    var strm0 = [streamIndices: lst]
+    while(!strm0.done) println("nx:", strm0.next)
+}
+tryMIstrm([3,4,2,2])

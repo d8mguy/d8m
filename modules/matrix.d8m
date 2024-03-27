@@ -1,0 +1,18 @@
+// Module for structural operations on matrices. Since 2d space types aren't implemented, these use 2d lists.
+
+export transpose
+
+given(T::entity) {
+	val transpose = \imp(mtx: list(list(T))) -> list(list(T)) {
+		if(mtx.count == 0) []
+		else {
+		    val nrows = mtx.count
+		    val ncols = mtx[0].count
+			var rslt = (0...ncols).{ val xx:list(T) = zerolist(nrows); xx }
+			each(i^(0...nrows)) each(j^(0...ncols)) rslt[j][i] = mtx[i][j]
+			rslt
+		}
+	}
+}
+
+// maybe add constructors for special matrix shapes and values; things like trace. But these quickly get numeric.

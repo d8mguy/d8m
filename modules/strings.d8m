@@ -1,0 +1,78 @@
+/*
+ * This module provides access to a subset of the functions in the corresponding go pkg, plus a few others.
+ */
+import go "strings" as gs
+
+export split, join, toLower, toUpper, toCap, toCamel, genUpper, genLower, toOrdinal, startsWith, endsWith, trimSpace
+
+val join = \(strgs: list(string), inter: string) -> string { gs.Join(strgs, inter) }
+// Be careful: gs.Split doesn't return an empty string if no instances of sep in strg, it returns a singleton list of strg
+// Thus, the correct test for no separators is split.count = 1, not 0.
+val split = \(strg, sep: string) -> list(string) { gs.Split(strg, sep) }
+val toLower = \(strg: string) -> string { gs.ToLower(strg) }
+val toUpper = \(strg: string) -> string { gs.ToUpper(strg) }
+
+val toCap = \imp(strg: string) -> string {
+    var ret: list(byte) = strg
+    if(strg != "") {
+        val byt0 = strg[0]
+        if('a' <= byt0 && byt0 <= 'z') ret[0] = 'A' + byt0 - 'a'
+    }
+    cvt(ret, string)
+}
+
+// Generate a camel case string from the input strgs; initial says whether to capitalize the first word.
+val toCamel = \(strgs: list(string), initial: boolean) -> string {
+    if(initial) join(strgs.{this.toCap}, "")
+    else if(strgs.count == 1) strgs[0]
+    else if(strgs.count == 0) ""
+    else strgs[0] + join(tail(strgs).{this.toCap}, "")
+}
+
+// Generate letter sequence elements from indices for various underlying sets of letters
+val genUpper = \imp(inx: integer) -> string {
+    val letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    var inx0 = inx
+    var bytes: list(byte) = []
+    while(inx0 > 0) { pushf(bytes, letters[inx0 % 26]); inx0 /= 26 }
+    cvt(bytes, string)
+}
+
+val genLower = \imp(inx: integer) {
+    val letters = "abdefghijklmnopqrstuvwxyz"
+    var inx0 = inx
+    var bytes: list(byte) = []
+    while(inx0 > 0) { pushf(bytes, letters[inx0 % 26]); inx0 /= 26 }
+    cvt(bytes, string)
+}
+
+// This isn't the only way to generate ordinals but it's reasonable.
+val toOrdinal = \imp(xxx: integer) -> string {
+    var x0 = xxx
+    var prefix = ""
+    if(x0 < 0) { x0 = -x0; prefix = "-" }
+    var suffix = "th"
+    if(x0 % 10 == 1 && x0 != 11) suffix = "st"
+    else if(x0 % 10 == 2 && x0 != 12) suffix = "nd"
+    prefix + "#{x0}" + suffix
+}
+
+// true if strg starts with ptn
+val startsWith = \(strg, ptn: string) -> boolean {
+    val cnt = strg.count
+    if(ptn.count <= cnt) strg[0...cnt-ptn.count] == ptn
+    else false
+}
+
+// true if strg ends with ptn
+val endsWith = \(strg, ptn: string) -> boolean {
+    val cnt = strg.count
+    if(ptn.count <= cnt) strg[cnt-ptn.count...cnt] == ptn
+    else false
+}
+
+// trim whitespace from both ends. This is done in a go pkg so we use that
+val trimSpace = \imp(strg: string) -> string {
+    gs.TrimSpace(strg)
+}
+

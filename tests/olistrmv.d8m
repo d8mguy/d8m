@@ -1,0 +1,28 @@
+import "olist" melted
+import go "math/rand"
+val tuptest = tuple(x, y: integer)
+val olT = olist(tuptest, integer, \(tp:tuptest) { tp.y })
+val tryolist = \imp() {
+    val randx = rand.New(rand.NewSource(1))
+    var olst1 = [olT: ]
+    // make olst1 400 long with 100 known elements for lookup checking. Threshold ensures that some will be in cache, others official.
+    val knownPresent = (1..100).{ randx.Intn(600) }
+    each(i^1..300) olst1.insert([tuptest: 600+randx.Intn(600), 600+randx.Intn(3000)])
+    each(k^knownPresent) olst1.insert([tuptest: k+5, k])
+    var fails = 0
+    unless(olst1.count == 400) { println("count expected was 400 but got", olst1.count); fails += 1 }
+    each(k^knownPresent) {
+        val x = [tuptest: k+5, k]
+        unless(x in olst1) { println("missing", x); fails += 1 }
+    }
+    each(k^knownPresent) {
+        val x = [tuptest: k+5, k]
+        olst1.remove(x)
+    }
+    each(k^knownPresent) {
+        val x = [tuptest: k+5, k]
+        if(x in olst1) { println("unexpectedly present", x); fails += 1 }
+    }
+    if(fails == 0) println("all good")
+}
+tryolist()

@@ -1,0 +1,32 @@
+
+import "strings"
+
+export Term
+
+// A flexible version of Term and some methods to use it. Minimalist: just three attributes. The strg form of arg
+// is for "leaf" nodes; the terms form is for internal (non-leaf) nodes. The loc slot is optional but can help
+// convey info about where (presumably in a text file) the term comes from. Lexparse produces Terms.
+// We define some helper methods like asString, asTerms, childN etc. Also a couple of recursive helpers: hasKind
+// is a predicate on existence of a matching kind value anywhere in a Term; hasMatch looks for fn-based matches.
+val Term: type = extend tuple(kind: string, arg: ortype(terms: list(Term), strg: string), loc:integer) where {
+    // Note a subtlety: this is recursive so the rettype must be explicit
+    method stringify = \() -> string {
+        val args = (tag(arg) == :strg ? arg : strings.join(arg.{stringify(this)}, ";"))
+        "[#{kind}: #{args}]"
+    }
+    method asString = \() { always(x~self.arg, tag(x) == :strg) }
+    method asTerms = \() { always(x~self.arg, tag(x) == :terms) }
+    method child0 = \() { asTerms(self)[0] }
+    method child1 = \() { asTerms(self)[1] }
+    method child2 = \() { asTerms(self)[2] }
+    method childN = \(n:integer) { asTerms(self)[n] }
+    method asLeaf = \() { asString(self.child0) }       // get the value of a leaf node
+    method hasKind = \(wanted:string) -> boolean {
+        if(tag(arg) == :strg) kind == wanted else any(arg.{ this.hasKind(wanted) })
+    }
+    method hasMatch = \(matchfn: \(Term)->boolean) -> boolean {
+        if(matchfn(self)) true
+        else if(tag(arg) == :strg) false
+        else any(arg.{ this.hasMatch(matchfn)})
+    }
+}

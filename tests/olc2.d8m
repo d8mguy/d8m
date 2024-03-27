@@ -1,0 +1,28 @@
+import "olistCached" as olc
+import go "math/rand"
+val tuptest = tuple(x, y: integer)
+val olcI = olc.olistCached(tuptest, \(tp:tuptest) { tp.y }, 80)
+val tryolc = \imp() {
+    val randx = rand.New(rand.NewSource(1))
+    var olc1 = [olcI: ]
+    // make olc1 400 long with 100 known elements for lookup checking. Threshold ensures that some will be in cache, others official.
+    val knownPresent = (1..100).{ randx.Intn(600) }
+    each(i^1..300) olc1.insert([tuptest: 600+randx.Intn(600), 600+randx.Intn(3000)])
+    each(k^knownPresent) olc1.insert([tuptest: k+5, k])
+    var fails = 0
+    unless(olc1.count == 400) { println("count expected was 400 but got", olc1.count); fails += 1 }
+    each(k^knownPresent) {
+        val x = [tuptest: k+5, k]
+        unless(x in olc1) { println("missing", x); fails += 1 }
+    }
+    each(k^knownPresent) {
+        val x = [tuptest: k+5, k]
+        olc1.remove(x)
+    }
+    each(k^knownPresent) {
+        val x = [tuptest: k+5, k]
+        if(x in olc1) { println("unexpectedly present", x); fails += 1 }
+    }
+    if(fails == 0) println("all good")
+}
+tryolc()

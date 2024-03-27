@@ -1,0 +1,16 @@
+// test list.index rewrites with var
+val selectedT = tuple(allDimsIndices: list(integer))
+val foo = \imp(sel: selectedT) {
+    var dtblIndices = copy(sel.allDimsIndices)
+    var clickInx = sel.allDimsIndices.index(-2)
+    var multiInx = sel.allDimsIndices.index(-3)
+    // here's where we fix the indices for dataTable; setting multiElts & clickElts first retains the info for client response
+    if(clickInx == nil && multiInx != nil) {
+        clickInx = multiInx
+        assert clickInx != nil
+        multiInx = nil
+        dtblIndices[clickInx] = -2
+    }
+    dtblIndices
+}
+[foo([selectedT: [0, 0, -1, -4, -2, 1]]), foo([selectedT: [0, 0, -1, -4, -3, 1]])]

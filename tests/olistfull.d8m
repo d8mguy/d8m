@@ -1,0 +1,17 @@
+import go "math/rand"
+import "olist" melted
+val xtupT = tuple(a, b : integer, ss : string)
+
+val tryolist = \() {
+    val randx = rand.New(rand.NewSource(1))
+    val rantup = \() { val aa = randx.Intn(20), bb = randx.Intn(20)+20; [xtupT: aa, bb, "#{aa+bb}"] }
+    val randomlst = (0...50).{rantup()}
+    val o1T = olist(xtupT, integer, \(xt : xtupT) { xt.a })
+    val o2T = olist(xtupT, integer, \(xt : xtupT) { xt.b })
+    val lst1 = [o1T: randomlst]
+    val lst2 = [o2T: randomlst]
+    val squares = (1..50).{this*this}
+    [a~sigma([x~lst1, s~squares].xp.{x.b * s}), b~sigma([x~lst2, s~squares].xp.{x.a * s})]
+
+}
+tryolist()

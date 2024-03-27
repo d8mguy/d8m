@@ -1,0 +1,29 @@
+// emptylistlit: test a changed policy on codegen of empty list, was nil before but that can fail
+import "strings"
+val Term: type = extend tuple(kind: string, arg: ortype(terms: list(Term), strg: string)) where {
+    // Note a subtlety: this is recursive so the rettype must be explicit
+    method stringify = \() -> string {
+        val args = (tag(arg) == :strg ? arg : strings.join(arg.{stringify(this)}, ";"))
+        "[#{kind}: #{args}]"
+    }
+}
+val pstate = extend tuple(tstack: list(Term), x:integer) where {
+    method makeTerm = \mod(from:integer, termtag: string) {
+        var rslt:Term
+        if(tstack.count == from) rslt = [Term: termtag, []]
+        else {
+            val endinx = tstack.count
+            rslt = [Term: termtag, copy(tstack[from...endinx])]
+            tstack.removeSeq(from, endinx)
+        }
+        rslt
+    }
+}
+val t1 = [Term: "aaa", "bbb"]
+val t2 = [Term: "ccc", [[Term: "ddd", "eee"], t1]]
+val foo = \imp() {
+    var ps1 = [pstate: [t1, t2, t1], 3]
+    println(ps1.makeTerm(3, "xxx"))
+    println(ps1.makeTerm(2, "yyy"))
+}
+foo()

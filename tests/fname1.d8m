@@ -1,0 +1,16 @@
+// fname1
+import "file"
+val tryfnames = \(nm, d0, b0, e0 : string) {
+    val fn0 = [file.filenameParts: nm]
+    println(nm, ":", cvt(fn0.dir, string), cvt(fn0.base, string), cvt(fn0.extn, string)) // fn0.dir = d0 && fn0.base = b0 && fn0.extn = e0)
+    println([file.filenameParts: d0 + "/" + b0 + ".d8m"].out())
+}
+val try = \() {
+    tryfnames("xxx/yyy.zzz", "xxx", "yyy", "zzz")
+    tryfnames("yyy.zzz", "", "yyy", "zzz")
+    tryfnames("yyy", "", "yyy", "")
+    tryfnames("yyy/zzz", "yyy", "zzz", "")
+    tryfnames("aaaa/xxx/yyy.zzz", "aaaa/xxx", "yyy", "zzz")
+    tryfnames("xxx.yyy.zzz", "", "xxx.yyy", "zzz")
+}
+try()

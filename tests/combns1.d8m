@@ -1,0 +1,7 @@
+// combns1
+import "combics" melted
+val trycombn = \(n: integer) {
+    val xxx = enumCombns(6, 3, n)
+    println(xxx.count, xxx)
+}
+trycombn(210)

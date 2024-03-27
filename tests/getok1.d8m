@@ -1,0 +1,15 @@
+// There was an inlining bug in getOK; this test checks that it's fixed.
+// Note that there's no theory reason why getOK works here, it just happens to, given what rand.Intn does with std seed.
+import "olist" melted
+import go "math/rand"
+val tt0 = tuple(x, y: integer)
+val olt = olist(tt0, integer, \(t: tt0) { t.y })
+val foo = \imp() {
+    val randx = rand.New(rand.NewSource(1))
+    val alist = (1..20).{ [tt0: randx.Intn(30), randx.Intn(10)+30] }
+    val olist = [olt: alist]
+    each(key^34..38) {
+        println(olist.getOK(key))
+    }
+}
+foo()

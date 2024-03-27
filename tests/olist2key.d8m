@@ -1,0 +1,19 @@
+// olist2key: how to code an olist with primary and secondary keys: define a tuple type with $< method.
+import "olist" melted
+import go "math/rand"
+val tt1 = tuple(a1, a2: string)
+val randx = rand.New(rand.NewSource(1))
+val makeTT1 = \() {
+    val strgs1 = ["aa", "abb", "cds"]
+    val strgs2 = ["3iu", "34kj", "jweo", "wekrj", "eie", " jei", "ejiru", "3iu4m"]
+    [tt1: strgs1[randx.Intn(3)], strgs2[randx.Intn(8)]]
+}
+val key2T = extend tuple(pri, scnd: string) where {
+    method $< = \(other:key2T) { self.pri < other.pri || (self.pri == other.pri && self.scnd < other.scnd) }
+}
+val lstT = olist(tt1, key2T, \(t1:tt1) { [key2T: t1.a1, t1.a2] })
+val foo = \() {
+    val lst = [lstT: (1..40).{ makeTT1() }]
+    println("lst:", lst)
+}
+foo()

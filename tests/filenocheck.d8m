@@ -1,0 +1,9 @@
+// filenocheck: verify that unused multiret symbols get flushed
+import "file"
+val foo = \imp(dirname: string) {
+    var fd = file.openBasic(dirname + "/append1.out")     // this exits on fail
+    val bytes: list(byte) = zerolist(fd.size())
+    fd.read(bytes)
+    cvt(bytes, string)
+}
+foo("tests")

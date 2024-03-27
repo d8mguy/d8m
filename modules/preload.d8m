@@ -1,0 +1,272 @@
+/*
+val year = 31536000*second, minute =60*second, hour = 60*minute, day = 24*hour
+given(Q::quantity) {
+	val $in = \(a, b: Q)->float { b/a }
+}
+*/
+val nilPossible = \typegen(T::entity) { ortype(main: T, nil: nil) }
+
+val ordered = typepred(T::entity, $<:\(T, T)->boolean )
+given(T::entity, U::entity) {
+    // This is the single-type version of reduce
+    val reduce = \imp(lst: list(T), fn:\(T,T)->T, initv: T) -> T {
+        var rslt = initv
+        each(x^lst) rslt = fn(rslt, x)
+        rslt
+    }
+    // This is reduce with the intermediate results recorded in a list. In python it's apparently called itertools.accumulate.
+    val accumulate = \imp(lst: list(T), fn:\(T,T)->T, initv: T) -> list(T) {
+        var tmp = initv
+        var rslt = [initv]
+        each(x^lst) { tmp = fn(tmp, x); rslt.pushb(tmp) }
+        rslt
+    }
+
+    // Given a list and a predicate, split the list into pos and neg elts and return as a tuple
+    val split = \imp(lst: list(T), pred:\(T)->boolean) -> tuple(pos, neg:list(T)) {
+        var pos: list(T) = []
+        var neg: list(T) = []
+        each(x^lst) if(pred(x)) pos.pushb(x) else neg.pushb(x)
+        [pos~pos, neg~neg]
+    }
+    // Given two lists of lists, return a list concatenating all pairs of them. Aka cross-product of lists.
+    val concatPairs = \imp(A, B: list(list(T))) -> list(list(T)) {
+        var rslt: list(list(T)) = []
+        each(a^A, b^B) rslt.pushb(a+b)
+        rslt
+    }
+
+    // Generate the list of values returned by the function on successive pairs of shifted values in lst, in other words
+    // fn(lst[0], lst[1]), fn(lst[1], lst[2]), ...
+    // Will crash if lst == [].
+    // Can be generalized to larger deltas, more args, subsequences, etc. But gotta stop somewhere.
+    val delta1 = \imp(lst:list(T), fn:\(T, T) -> U) -> list(U) {
+        var curval = lst[0]
+        var rslt: list(U) = zerolist(lst.count - 1)
+        each(i^1...lst.count) { rslt[i-1] = fn(curval, lst[i]); curval = lst[i] }
+        rslt
+    }
+
+
+}
+given(L::entity) {
+    // Flatten by 1 level.
+    val flatten1 = \(lst: list(list(L))) { reduce(lst, $+, []) }
+}
+val sigma = \(lst: list(integer)) { reduce(lst, $+, 0) }
+val sigma = \(lst: list(float)) { reduce(lst, $+, 0.0) }
+val dotprod = \(lsta, lstb: list(integer)) { reduce([adtpd~lsta, bdtpd~lstb].xp.{adtpd*bdtpd}, $+, 0) }
+val dotprod = \(lsta, lstb: list(float)) { reduce([adtpd~lsta, bdtpd~lstb].xp.{adtpd*bdtpd}, $+, 0.0) }
+val abs = \(x: integer) { x < 0 ? -x : x }
+val abs = \(x: float) { x < 0.0 ? -x : x }
+
+given(OT::ordered) {
+	val max = \(a, b: OT) { a < b ? b : a }
+	val min = \(a, b: OT) { a < b ? a : b }
+	val max = \(lst: list(OT), iv: OT) { reduce(lst, max, iv) }
+	val min = \(lst: list(OT), iv: OT) { reduce(lst, min, iv) }
+	val inRange = \(x, lo, hi: OT) { lo <= x && x < hi }
+	// True if elements are non-decreasing with respect to `$<`.
+	val inOrder = \(lst: list(OT)) {
+    	if(lst.count > 1) each(inx^1...lst.count) unless(lst[inx-1] <= lst[inx]) return false
+    	true
+    }
+}
+given(T::entity) val inOrder = \(lst: list(T), fn:\(T,T)->boolean) {
+	if(lst.count > 1) each(inx^1...lst.count) unless(fn(lst[inx-1], lst[inx])) return false
+	true
+}
+// True if all elements of lst are true.
+val all = \imp(lst: list(boolean)) -> boolean { var rslt = true; each(x^lst) unless(x) { rslt = false; break }; rslt }
+// True if any element of lst is true.
+val any = \imp(lst: list(boolean)) { var rslt = false; each(x^lst) if(x) { rslt = true; break }; rslt }
+
+// Search for `ptn` in `strg`; return an index or -1 if not found.
+val stringIndex = \(strg, ptn: string) -> integer {
+    val plen = ptn.count
+    each(ofs^0..(strg.count - plen)) if(strg[ofs...ofs+plen] == ptn) return ofs
+    -1
+}
+// Search for single byte `ptn` in `strg`; return an index or -1 if not found.
+val byteIndex = \(strg: string, ptn: byte) -> integer {
+    each(ofs^0...strg.count) if(strg[ofs] == ptn) return ofs
+    -1
+}
+
+// Low level string->integer conversion. Decimal only; does handle initial whitespace, + and -. Bails at first non-digit so
+// a non-number will return 0. Therefore, should only be used on strings known to be integers.
+val to_i = \imp(istrg: string) -> integer {
+    var ofs = 0
+    var rslt = 0
+    loop {
+        if(ofs == istrg.count) return 0
+        if(istrg[ofs] != ' ' && istrg[ofs] != '\t') break
+        ofs += 1
+    }
+    var neg = false
+    if(istrg[ofs] == '+') ofs += 1 else if(istrg[ofs] == '-') { neg = true; ofs += 1 }
+    while(ofs < istrg.count) {
+        val d = istrg[ofs]
+        ofs += 1
+        unless('0' <= d && d <= '9') break
+        rslt *= 10
+        rslt += d - '0'
+    }
+    neg ? -rslt : rslt
+}
+
+import go "fmt"
+val to_f = \imp(fstrg: string) -> float {
+    var rslt: float
+    fmt.Sscanf(fstrg, "%f", rslt)       // Sscanf has special Pointerize flag so this is d8m syntax but not semantics
+    rslt
+}
+// Return a string version of `flt` to `nfract` digits of precision.
+val to_s = \(flt: float, nfract: integer) -> string {
+    fmt.Sprintf("%%#{2 + nfract}.#{nfract}f", flt)
+}
+val to_hex = \(v: integer) {
+    fmt.Sprintf("%x", v)
+}
+
+// essential RWRules: these are critical to compiler optimization.
+given(T, TT::entity) {
+	// indexM1NilPred does open coded index (ie lst[pred => index]) substg -1 for nil; its rettype is integer
+	val indexM1NilPred = \imp(lst: list(T), pred:\(T,integer)->boolean) {
+		var rslt = -1
+		each(inx^0...lst.count) if(pred(lst[inx], inx)) { rslt = inx; break }
+		rslt
+	}
+    // This rule changes open coded index search in list to use -1 instead of nil for the not found case
+    // A slightly different rule is needed for the list.index method, since its arg is an elt, not a predicate.
+	val rwIndexIntPred = \xprftn() {
+		val lst: list(T), pred: xprterm, S0, S1: xprstmts, ident: label
+		val intinx: xprsym = mksym(ident, ortype(main: integer, nil: nil), parseRW("lst[pred => index]"))
+		val iiDecl: xprterm = matching(mkterm(:val, intinx), false, true)
+		matchquery("{S0; iiDecl; S1}")
+		val ii0 = mksym(gensym(), integer, parseRW("indexM1NilPred(lst, pred)"))
+		// see notes at 02/28/21; there's a subtle issue here about intinx as CT vs RT
+		val b4 = [mkterm(:eq, arg0(iiDecl), nil), mkterm(:eqeq, arg0(iiDecl), nil), arg0(iiDecl)]
+		val aftr = [mkterm(:eq, ii0, -1), mkterm(:eqeq, ii0, -1), ii0]
+		val stmtlist = S0.stmts + [mkterm(:val, ii0)] + subst(S1, b4, aftr).arg0
+		mkstmts(stmtlist)
+	}
+	// indexM1Nil does list.index method with -1 in place of nil; its rettype is integer
+	val indexM1Nil = \imp(lst: list(T), elt: T) {
+		var rslt = -1
+		each(inx^0...lst.count) if(lst[inx] == elt) { rslt = inx; break }
+		rslt
+	}
+	// For the usual case of list.index where the result is bound to a symbol
+	val rwIndexInt = \xprftn() {
+		val lst: list(T), elt: T, S0, S1: xprstmts, ident: label
+		val intinx: xprsym = mksym(ident, ortype(main: integer, nil: nil), parseRW("index(lst, elt)"))
+		val iiDecl: xprterm = matching(mkterm(:val, intinx), false, true)
+		matchquery("{S0; iiDecl; S1}")
+		val ii0 = mksym(gensym(), integer, parseRW("indexM1Nil(lst, elt)"))
+		val b4 = [mkterm(:eq, arg0(iiDecl), nil), mkterm(:eqeq, arg0(iiDecl), nil), mkterm(:asgn, arg0(iiDecl), nil), arg0(iiDecl)]
+		val aftr = [mkterm(:eq, ii0, -1), mkterm(:eqeq, ii0, -1), mkterm(:asgn, ii0, -1), ii0]
+		mkstmts(S0.stmts + [mkterm(:val, ii0)] + subst(S1, b4, aftr).arg0)
+	}
+	// This is here because I can't figure out at the moment how to make a disjunctive pattern that matches either :val or :var
+	val rwIndexIntVar = \xprftn() {
+		val lst: list(T), elt: T, S0, S1: xprstmts, ident: label
+		val intinx: xprsym = mksym(ident, ortype(main: integer, nil: nil), parseRW("index(lst, elt)"))
+		val iiDecl: xprterm = matching(mkterm(:var, intinx), false, true)
+		matchquery("{S0; iiDecl; S1}")
+		val ii0 = mksym(gensym(), integer, parseRW("indexM1Nil(lst, elt)"))
+		val b4 = [mkterm(:eq, arg0(iiDecl), nil), mkterm(:eqeq, arg0(iiDecl), nil), mkterm(:asgn, arg0(iiDecl), nil), arg0(iiDecl)]
+		val aftr = [mkterm(:eq, ii0, -1), mkterm(:eqeq, ii0, -1), mkterm(:asgn, ii0, -1), ii0]
+		mkstmts(S0.stmts + [mkterm(:var, ii0)] + subst(S1, b4, aftr).arg0)
+	}
+	// For the unusual case of list.index where the result is tested against nil
+	val rwIndexInt1 = \xprftn() {
+		val lst: list(T), elt: T, S0, S1: xprstmts, ident: label
+		val intinx: xprsym = mksym(ident, ortype(main: integer, nil: nil), parseRW("index(lst, elt) = nil"))
+		val iiDecl: xprterm = matching(mkterm(:val, intinx), false, true)
+		matchquery("{S0; iiDecl; S1}")
+		val ii0 = mksym(gensym(), integer, parseRW("indexM1Nil(lst, elt)"))
+		val b4 = [mkterm(:eq, arg0(iiDecl), nil), mkterm(:eqeq, arg0(iiDecl), nil), arg0(iiDecl)]
+		val aftr = [mkterm(:eq, ii0, -1), mkterm(:eqeq, ii0, -1), ii0]
+		mkstmts(S0.stmts + [mkterm(:val, ii0)] + subst(S1, b4, aftr).arg0)
+	}
+
+	// This is one of the key rewrite rules: it matches a pair of each stmts E1, E2 where E1 generates a particular list L
+	// using pushb and E2 consumes it, and no other code uses L. This pattern arises from any chain op pair: a.{xfm0}.{xfm0},
+	// a.[filt0].{xfm0}, etc.
+    val rwEachSeql = \xprftn() {
+        val IV1, IV2: xprsym, S0, S2, S3, S4: xprstmts
+        val X: list(T), Y: T, L0: xprterm
+        val EBM: xprterm = matching("X = __append(X,Y)", true, true)
+        matchquery("{S0; each(IV1^L0) EBM; S2; each(IV2^X) S3; S4}")
+        val CFX = pattern([mkterm(:break), mkterm(:return, _), mkterm(:continue)])
+        // don't RW (and elim X) if it's used elsewhere or if either each body exits via cntlflow
+        skipIf(usescount(S2, X) > 0 || usescount(S3, X) > 0 || usescount(S4, X) > 0 || usescount(EBM, X) > 2 || contains(CFX, EBM))
+        val S2After = disjoint(uses(S3), mods(S2) + defs(S2))
+        val S2Before = disjoint(uses(S2), mods(EBM))
+        // the other 2 clauses have to do with putting S2 before or after the remaining loop
+        skipIf(!(S2After || S2Before))
+        val Ysym = mksym(gensym(), type(Y), Y)
+        val Yd = mkterm(:val, Ysym)
+        val S3p = renameLocals(EBM, mkstmts([Yd] + stmts(S3.subst([IV2], [Ysym]))))
+        val EBMp = EBM.subst([parseRW("X = __append(X,Y)")], [S3p])
+        if(S2Before) parseRW("{S0; S2; each(IV1^L0) EBMp; S4 }")
+        else parseRW("{S0; each(IV1^L0) EBMp; S2; S4 }")
+    }
+    // This matches pairs of each stmts that iterate over the same thing and that thing isn't modded by either one.
+    // In which case, the each stmts can be fused into a single one.
+    val rwEachPll = \xprftn() {
+        val IV1, IV2: xprsym, S0, S1, S2, S3, S4: xprstmts, L0: xprterm
+        matchquery("{S0; each(IV1^L0) S1; S2; each(IV2^L0) S3; S4}")
+        val CFX = pattern([mkterm(:break), mkterm(:return, _), mkterm(:continue)])
+        skipIf(!disjoint(mods(S1), uses(S2) + uses(S3)) || !disjoint(mods(S2), uses(S3)) || contains(CFX, S1, S3))
+        skipIf(anyConnected(S1) && anyConnected(S3))
+        val S3p = mkstmts([S1, renameLocals(S1, S3.subst([IV2], [IV1]))])
+        parseRW("{S0; S2; each(IV1^L0) S3p; S4 }")
+    }
+
+    // This rule matches each(x^xp(TL) { xfm } where TL is a term typed as some tuple of lists. This pattern typically
+    // arises by inlining TL.xp.{ xfm }. It replaces xp(TL) with code that indexes all the lists in pll, driven by the leftmost.
+	val xpUnfoldRule = \xprftn() {
+		val Tup: TT, X: xprsym, S0: xprstmts, FT: type
+		val xpcall: xprterm = matching(mkterm(:funcall, mksym(:xp, FT), [Tup]), false, true)
+		matchquery("each(X^xpcall) S0")
+		val X0, X1: xprterms, Y: xprsym
+		// bail if the itervar is used other than to access attribs. (This test maybe isn't perfect.)
+		skipIf(contains(mkterm(:funcall, _, [X0, X, X1]), S0))
+		val inx = mksym(gensym(), integer)
+		val tupID = mksym(gensym(), type(Tup), Tup)
+		val listrefs = type(Tup).attributes.{mkterm(:funcall, methodNamed(type(this), :rvalindex), [mkterm(:symchain, tupID, this), inx])}
+		val Xp = mksym(gensym(), type(X), mkterm(:litform, type(X), listrefs))
+		val S0p = mkstmts([mkterm(:var, Xp)] + arg0(S0.subst([X], [Xp])))
+		val TL0 = mkterm(:symchain, tupID, type(Tup).attributes[0])
+		mkstmts([mkterm(:var, tupID),
+		         mkterm(:each, inx, mkterm(:irange, 0, mkterm(:funcall, methodNamed(type(TL0), :count), [TL0]), 1, false), S0p)])
+	}
+	// This rule handles the most common instance of generating a list only to count the elements, namely when the generation
+	// is a single pushb in a loop. I'm doing only this because I feel the extra complexity of handling more cases isn't worth it.
+	// Note: as of 23/02/17 this isn't enabled because it never works and I've yet to take the time to examine and fix it.
+	val rwEachCounting = \xprftn() {
+		val IV1: xprsym, S0, S1: xprstmts
+		val X: list(T), Y: T, L0: xprterm
+    	val Def: xprterm = matching("pushb(X, Y)", true, true)
+    	matchquery("{S0; each(IV1^L0) Def; S1}")
+	    val counts = matchcount("__len(X)", Def, S1)
+	    val uses = usescount(Def, X) + usescount(S1, X)
+	    skipIf(counts == 0 || uses != counts + 1 || termtag(X) != :symbol)
+	    val Ysym = mksym(gensym(), integer, 0)
+		val S1p = S1.subst([parseRW("__len(X)")], [Ysym])
+		val Yd = mkterm(:var, Ysym)
+		val plus = mksym(:+, mktype(:function, [integer, integer], integer, :pure))
+		val Incr = mkterm(:asgn, Ysym, mkterm(:funcall, plus, [Ysym, 1]))
+		val Defp = Def.subst([parseRW("pushb(X, Y)"), parseRW("__len(X)")], [Incr, Ysym])
+		parseRW("{S0; Yd; each(IV1^L0) Defp; S1p }")
+	}
+}
+rewrite(rwIndexIntPred)
+rewrite(rwIndexInt)
+rewrite(rwIndexIntVar)
+rewrite(rwEachSeql)
+rewrite(rwEachPll)
+rewrite(xpUnfoldRule)
+//rewrite(rwEachCounting)

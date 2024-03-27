@@ -1,0 +1,30 @@
+/*
+// bintree
+import "bintree" melted
+val btiT = bintree(integer)
+val trybin = \imp(x:integer) {
+    var abt = [btiT: x]
+    val l1 = abt.addLeft(x+1, abt.root)
+    abt.addLeft(x+3, l1)
+    abt.addRight(x+2, l1)
+    abt.addRight(x-1, abt.root)
+    abt.preorder()
+}
+compile(trybin(12))
+*/
+
+
+// readfile1
+import "file"
+val tryfile = \() {
+    val fd = file.openBasic("foo", 4096)
+    val cnt = fd.read()
+    cvt(select(fd.buff, 0, cnt), string)
+}
+compile(tryfile())
+
+
+/*
+// dict1
+import "dict" melted
+val isdict = 

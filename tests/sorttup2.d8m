@@ -1,0 +1,17 @@
+import "sort" melted
+import go "math/rand"
+val tupT = tuple(x,y: float)
+val trysort = \imp() {
+    val randx = rand.New(rand.NewSource(1))
+    val cmpInX = \(a,b: tupT) { a.x <= b.x }
+    val cmpFnX = \(a,b: tupT) { a.x < b.x }
+    val cmpInY = \(a,b: tupT) { a.y <= b.y }
+    val cmpFnY = \(a,b: tupT) { a.y < b.y }
+    val cmpInS = \(a,b: tupT) { a.x+a.y <= b.x+b.y }
+    val cmpFnS = \(a,b: tupT) { a.x+a.y < b.x+b.y }
+    var rantups = (1..500).{ [tupT: randx.Float64()*500.0 - 250.0, randx.Float64()*500.0 + 250.0] }
+    println(inOrder(modsort(rantups, cmpFnX), cmpInX))
+    println(inOrder(modsort(rantups, cmpFnY), cmpInY))
+    println(inOrder(modsort(rantups, cmpFnS), cmpInS))
+}
+trysort()

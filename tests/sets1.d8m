@@ -1,0 +1,9 @@
+import "set" melted
+val intset = set(integer)
+val s0 = [intset: 1, 17, 2, 5, 3, 22, 18]
+val tryIntset = \() {
+    println(17 in s0 && isEmpty(intersection(s0, [intset: 5,4,44,33]))) // true && false
+    println(4 in s0 && isEmpty(intersection(s0, [intset: 4,44,33])))    // false && true
+    println(17 in s0 && isEmpty(intersection(s0, [intset: 4,21,55]))) // true && true
+}
+tryIntset()

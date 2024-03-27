@@ -1,0 +1,186 @@
+// The splay module defines type `splaytree`, generic on any ordered type. As usual, this means totally ordered. Splay
+// trees to not allow for duplicates, so this is not an appropriate implementation of olists, but is good for sets.
+//
+// In the algorithms literature, splay trees are presented as a type that's efficient in an average sense for accessing
+// elements, and yet low overhead compared to some other varieties of balanced search trees. Performance measurements to
+// date don't suggest that splay trees are typically a good choice overall, being slower than most other options for sets,
+// even when the element type has a total ordering.
+//
+// This code code in the `Splay_tree` wikipedia article.
+// Methods insert, delete return true if they did something.
+// The splayOnAccess attribute controls aspects of when splay operation is called.
+// Enumeration is done with eachstart.
+//
+// An STMap is defined for `set(T)`.
+
+//////////////////////////
+
+export splaytree
+
+val splaytree = \typegen(CT::ordered) {
+	val STNode: type
+	val OSTNode = ortype(nil: nil, main: STNode)
+	val STNode = extend tuple(value: CT, left, right, parent: OSTNode) where {
+		method next = \() { right == nil ? parent : right }
+	}
+	extend tuple(private root: OSTNode, private countA: integer, private splayOnAccess: boolean) where {
+		private method rotl = \mod(x: STNode) {
+			assert rcvrLinked(x)
+			var y = x.right
+			if(y != nil) {
+				var yl = y.left
+				x.right = yl
+				if(yl != nil) yl.parent = x
+				y.parent = x.parent
+			}
+			if(x.parent == nil) root = y
+			else if(x === x.parent.left) x.parent.left = y
+			else x.parent.right = y
+			if(y != nil) y.left = x
+			x.parent = y
+		}
+		private method rotr = \mod(x: STNode) {
+			assert rcvrLinked(x)
+			var y = x.left
+		    if(y != nil) {
+			    x.left = y.right
+			    if(y.right != nil) y.right.parent = x
+			    y.parent = x.parent
+		    }
+		    if(x.parent == nil) { root = y }
+		    else if(x === x.parent.left) x.parent.left = y
+		    else x.parent.right = y
+		    if(y != nil) y.right = x
+		    x.parent = y
+		}
+		private method splay = \mod(x: STNode) {
+			while(x.parent != nil) {
+	    		if(x.parent.parent == nil) if(x.parent.left === x) rotr(x.parent) else rotl(x.parent)
+	    		else if(x.parent.left === x && x.parent.parent.left === x.parent) { rotr(x.parent.parent); rotr(x.parent) }
+				else if(x.parent.right === x && x.parent.parent.right === x.parent) { rotl(x.parent.parent); rotl(x.parent) }
+				else if(x.parent.left === x && x.parent.parent.right === x.parent) { rotr(x.parent); rotl(x.parent) }
+				else { rotl(x.parent); rotr(x.parent) }
+	    	}
+			root = x
+		}
+		assert purified(splay)
+
+		// replace u with v in the tree
+		private method replace = \mod(u: STNode, v: OSTNode) {
+            assert rcvrLinked(u)
+            assert rcvrLinked(v)
+		    if(u.parent == nil) root = v
+		    else if(u === u.parent.left) u.parent.left = v
+		    else u.parent.right = v
+            if(v != nil) v.parent = u.parent
+		}
+
+		// search left
+		private method subtreeMin = \imp(elt: STNode) {
+		    var elt0 = elt
+		    while(elt0.left != nil) elt0 = elt0.left
+		    elt0
+		}
+
+		// return elt containing v or nil
+		private method pfind = \imp(v: CT) {
+			var elt: OSTNode = root
+			while(elt != nil) {
+				if(elt.value < v) elt = elt.right
+				else if(v < elt.value) elt = elt.left
+				else break
+			}
+			elt
+		}
+		// insert returns a boolean, true if it inserted
+		method insert = \mod(v: CT) {
+			if(root == nil) { root = [STNode: v, nil, nil, nil]; countA = 1; return true }
+			var p: STNode = root
+            loop {
+                if(p.value < v && p.right != nil) p = p.right
+                else if(v < p.value && p.left != nil) p = p.left
+                else break
+            }
+			if(p.value == v) return false			// v is already present
+			countA += 1
+			val stn0 = [STNode: v, nil, nil, p]
+			if(p.value < v) p.right = stn0 else p.left = stn0
+			splay(stn0)
+			true
+		}
+		// delete returns a boolean, true if deleted
+		method delete = \mod(v: CT) {
+			var elt = pfind(v)
+			if(elt == nil) return false
+			splay(elt)
+			if (elt.left == nil) replace(elt, elt.right)
+            else if (elt.right == nil) replace(elt, elt.left)
+            else {
+                var y = subtreeMin(elt.right)
+                if (y.parent !== elt) {
+                    replace(y, y.right)
+                    y.right = elt.right
+                    assert y.right != nil && y.right.parent != nil
+                    y.right.parent = y
+                }
+                replace(elt, y)
+                y.left = elt.left
+                assert y.left != nil && y.left.parent != nil
+                y.left.parent = y
+            }
+			countA -= 1
+			true
+		}
+		// find an elt == other, true if it's there
+		method present = \imp(other: CT) -> boolean {
+			if(root == nil) return false
+			var elt = root
+            loop {
+                if(elt.value < other && elt.right != nil) elt = elt.right
+                else if(other < elt.value && elt.left != nil) elt = elt.left
+                else break
+            }
+			if(splayOnAccess) splay(elt)
+            elt.value == other
+        }
+		method count = \() { countA }
+		method lithook = \mod(ivl: list(CT)) { root = nil; countA = 0; splayOnAccess = false; each(elt^ivl) insert(elt) }
+		method setSplayOnAccess = \mod(flg: boolean) { splayOnAccess = flg }
+		method eachstart = \imp() {
+			val esT: type = extend tuple(cur: OSTNode) where {
+				method goleft = \mod() {
+					loop { if(cur == nil || cur.left == nil) break; cur = cur.left }
+					self
+				}
+				method eachdone = \() { cur == nil }
+				method eachstep = \mod() -> nothing {
+					assert cur != nil
+					if(cur.right != nil) { cur = cur.right; goleft() }
+					else {
+						loop {
+							val prev = cur
+							cur = cur.parent
+							if(cur == nil || prev === cur.left) break
+						}
+					}
+				}
+				method value = \() { assert cur != nil; cur.value }
+			}
+			[esT: root].goleft()
+		}
+	}
+}
+
+oncondition defined(set, type) {
+    given(OT::ordered, anOT: OT) {
+        STMap {
+            source = set(OT)
+            target = splaytree(OT)
+            direct count, lithook
+            anOT in self => self.present(anOT)
+            self.remove(anOT) => self.delete(anOT)
+            self.add(anOT) => self.insert(anOT)
+            enumerable(self) => self
+        }
+    }
+}

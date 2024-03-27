@@ -1,0 +1,6 @@
+val li1 = [1,4,2,66,7,3,6]
+val ls1 = ["ekj", "3i", "3iu", "55", "ekj", "ekjl", "eirueru"]
+val tryxp = \(li : list(integer), ls : list(string)) {
+    sigma([a~li, b~ls].xp.{ a*(a + count(b)) })
+}
+tryxp(li1, ls1)

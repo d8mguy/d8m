@@ -1,0 +1,10 @@
+
+// index1
+// This test is to trigger the predicate index rwrule with dict-like search. It should subst -1 for nil
+val prT = tuple(ky : string, vl : label)
+val aLst = [[prT: "ekrj", :xx], [prT: "iuio", :yx], [prT: "xxxx", :xy], [prT: "xxxxy", :yy], [prT: "3", :x3]]
+val foo = \(lst : list(prT)) {
+    val inx = lst[this.ky == "3" => index]
+    inx == nil ? "boo" : "at #{inx} got #{lst[inx].vl}"
+}
+foo(aLst)

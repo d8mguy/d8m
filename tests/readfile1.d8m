@@ -1,0 +1,8 @@
+import "file"
+val tryfile = \imp() {
+    var fd = file.openBasic("testdata/readfile1.txt")
+    val buff : list(byte) = zerolist(512)
+    val cnt = fd.read(buff)
+    cvt(select(buff, 0, cnt), string)
+}
+tryfile()

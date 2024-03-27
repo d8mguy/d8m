@@ -1,0 +1,527 @@
+// A jsonStreamer holds bytes that can be decoded as json into a particular type (using the fromJson method) or encoded
+// into a json string (using the toJson method).
+//
+// A json codec is an exotic beast in a statically typed language, since javascript is dynamically typed. Certain things
+// that are trivially codeable in json are essentially unrepresentable in d8m, go, or any other statically typed language.
+// For the common case of using json to communicate with a web browser, a website designer may be able to ensure that
+// the things the browser needs occupy the subset of javascript compatible with static typing (mainly that list elements
+// are all of the same type). But pre-existing website designs may not allow that, or other issues may intervene.
+//
+// The go solution for this is a json coding package that uses interface{} extensively, essentially bypassing static
+// typing and/or allowing you to query what's in the json. This approach works and can be useful, but if you are able to
+// use static types, there's a performance penalty for interface{}. The solution adopted here is different and in fact,
+// in the initial release, the d8m compiler can't generate code for a fully generic json interface. Instead, jsonStreamer
+// can decode to well defined d8m types and encode both static and dynamic types. If you need to send json coded dynamic
+// types to a d8m-based program, you can receive the bytes but can't decode them with the tools provided here.
+//
+// The flip side of these limitations is that in both directions, the d8m compiler generates code for the specific type
+// you're encoding or decoding, so it's fast. This is done with rewrite rules that are included in this module.
+
+
+import "bytes" as bb
+import "codecs/base" melted
+
+export jsonStreamer
+
+// A jsonStreamer's state is the same as baseStreamer; it adds methods for cvtg to and from json.
+// First, some utility methods, then the real stuff.
+// We provide both toJson/fromJson which work on anything (at least anything that json can encode)
+// and, for the to direction, more specific methods, like toJsonInt. These methods allow one to write
+// code to create json streams whose typing isn't expressible directly in d8m, like list(entity).
+val jsonStreamer = extend baseStreamer where {
+    // copies so we know where the float ends and call fmt to convert
+    method readFloat = \mod() -> float {
+        whitespace()
+        val i0 = self.index
+        if(cur() == '-') index += 1
+        while(bb.digit(cur())) index += 1
+        if(optional(".")) while(bb.digit(cur())) index += 1
+        if(optional("e") || optional("E")) {
+            if(cur() == '-' || cur() == '+') index += 1
+            while(bb.digit(cur())) index += 1
+        }
+        // The little state machine above has found the end of the number; let go do the actual conversion
+        to_f(cvt(content[i0...index], string))
+    }
+    // does a copy, in case there are embedded backslashes
+    method readString = \mod() {
+        var ret = ""
+        var interned: list(byte) = []
+        whitespace()
+        if(cur() != '"') error("string expected")
+        else {
+            next()
+            while(cur() != '"') {
+                if(cur() == '\\') {
+                    index += 1
+                    if(cur() == 'u') {
+                        index += 1
+                        unless(bb.hexdigit(cur()) && bb.hexdigit(content[index+1]) &&
+                            bb.hexdigit(content[index+2]) && bb.hexdigit(content[index+3])) {
+                            error("bad format in \\u")
+                            break
+                        }
+                        var dval = bb.toHex(next())
+                        dval = cvt(lshift(dval, 4), integer) + bb.toHex(next())
+                        interned.pushb(cvt(dval, byte))
+                        dval = bb.toHex(next())
+                        dval = cvt(lshift(dval, 4), integer) + bb.toHex(next())
+                        interned.pushb(cvt(dval, byte))
+                    } else if(cur() == 't') { next(); interned.pushb('\t')
+                    } else if(cur() == 'n') { next(); interned.pushb('\n')
+                    } else if(cur() == '"') { next(); interned.pushb('"')
+                    } else if(cur() == '\\') { next(); interned.pushb('\\')
+                    } else if(cur() == '/') { next(); interned.pushb('/')
+                    } else if(cur() == 'r') { next(); interned.pushb('\r')
+                    } else if(cur() == 'b') { next(); interned.pushb(8)
+                    } else if(cur() == 'f') { next(); interned.pushb(12)
+                    } else interned.pushb(next())
+                } else interned.pushb(next())
+            }
+            ret = cvt(interned, string)
+            next()
+        }
+        ret
+    }
+    // readLabel checks for label content restrictions and calls the builtin cvt method
+    method readLabel = \mod() {
+        var interned: list(byte) = []
+        whitespace()
+        if(cur() != '"') error("string expected")
+        else {
+            next()
+            val punctChars: list(byte) = "<>=+-*/%"
+            var punct = cur() in punctChars
+            while(cur() != '"') {
+                if(punct && cur() in punctChars) interned.pushb(next())
+                else if(punct) break
+                else if(interned.count == 0 && bb.digit(cur())) break
+                else unless(bb.alphanum(cur())) break
+                interned.pushb(next())
+            }
+            if(cur() == '"') next()
+            else { error("malformed label"); if(interned.count == 0) interned.pushb('$') }   // ensure non-empty label, despite error
+        }
+        cvt(cvt(interned, string), label)
+    }
+
+    // creates a string literal by inserting backquotes as needed,
+    // and putting double quotes around it. This method doesn't mod self, use add for that.
+    method writeString = \imp(bytes: string) {
+        var rslt: list(byte) = ['"']
+        each(b^bytes) {
+            if(b == '\t') { rslt.pushb('\\'); rslt.pushb('t')
+            } else if(b == '\n') { rslt.pushb('\\'); rslt.pushb('n')
+            } else if(b == '"') { rslt.pushb('\\'); rslt.pushb('"')
+            } else if(b == '\r') { rslt.pushb('\\'); rslt.pushb('r')
+            } else rslt.pushb(b)
+        }
+        rslt.pushb('"')
+        cvt(rslt, string)
+    }
+
+    // fromJson decodes a json buffer into an expected type and returns the resulting entity.
+    // The compiler will inline it to avoid interface types if conditions are right.
+    // Note that this uses a special pseudo-function typeAs, which is in the compiler but not
+    // currently documented in the spec. TypeAs is a bit like cast except that it runs later in the
+    // compilation process, being evaluated in Simplify while backend optimization happens. I am not
+    // sure it's the long term solution I want, which is why I haven't written it up yet in the spec.
+    method fromJson = \mod() -> entity {
+        var fjrslt: expectedType
+        case fjrslt {
+            integer => {
+                var neg = self.optional("-")
+                if(bb.digit(cur())) {
+                    while(bb.digit(cur())) { fjrslt *= 10; fjrslt += cur() - '0'; next() }
+                    if(neg) fjrslt = -fjrslt
+                } else error("integer expected")
+            }
+            float => { fjrslt = readFloat() }
+            string => { fjrslt = readString() }
+            label => { fjrslt = readLabel() }
+            boolean => {
+                if(optional("true")) fjrslt = true
+                else if(optional("false")) fjrslt = false
+                else error("expected 'true' or 'false'")
+            }
+            list => {
+                expect('[')
+                unless(optional(`]`)) {
+                    loop { appendElement(fjrslt, typeAs(self.fromJson(), elttype(expectedType))); if(!optional(`,`)) break }
+                    expect(']')
+                }
+            }
+            tuple => {
+                expect('{')
+                unless(optional(`}`)) {
+                    loop {
+                        val jIdent = readString()
+                        expect(':')
+                        if(!setAttribute(fjrslt, jIdent, self.fromJson())) {
+                            error("attribute #{jIdent} is unknown"); skipThrough('}')
+                            break
+                        }
+                        if(!optional(`,`)) break
+                    }
+                    expect('}')
+                }
+            }
+        }
+        fjrslt
+    }
+
+    // encodes any entity of a known, non-recursive, type. Note that the body of this definition is empty; it works by rewrite rules
+    // defined below that match funcalls to this function and change them into calls to "toJsonSynthdN" for N a sequence
+    // of integers; each of these synthesized functions encodes a type involved in encoding the full type and is memoized
+    // for possible reuse. The upshot is that the type to be encoded is unrolled into a set of calls for each part, with
+    // lists and tuples orchestrated
+    // to is the "general purpose" encoder. If called with an entity of a specific non-recursive type, the
+    // generated code will unroll to avoid interface types.
+    method toJson = \mod(x:entity) -> nothing {
+    }
+
+    // Same as toJson but for the prettyprinting version
+    method toJsonPretty = \mod(x:entity, sep:string) -> nothing {
+    }
+    method toJsonPretty0 = \mod(x:entity, cursep, sep0:string) -> nothing {
+    }
+
+    // method toJsonStartObject and the methods that follow are intended to aid in hand coding of toJson for dynamic types
+    method toJsonStartObject = \mod() { self.add("{") }
+    method toJsonFinishObject = \mod() { self.add("}") }
+    method toJsonStartList = \mod() { self.add("[") }
+    method toJsonFinishList = \mod() { self.add("]") }
+    method toJsonAttributeOpen = \mod(lbl: label) { self.add("\""); self.add(lbl); self.add("\":") }
+    method toJsonComma = \mod() { self.add(",") }
+    method toJsonInteger = \mod(int: integer) { add(stringify(int)) }
+    method toJsonFloat   = \mod(flt: float) { add(stringify(flt)) }
+    method toJsonLabel = \mod(lbl: label) { self.add("\""); self.add(lbl); self.add("\"") }
+    method toJsonString = \mod(s: string) { self.add(writeString(s)) }
+    method toJsonListInteger = \mod(lst: list(integer)) {
+        toJsonStartList()
+        val lastinx = lst.count - 1
+        each(elt^lst, inx) { self.toJsonInteger(elt); if(inx < lastinx) add(`,`) }
+        toJsonFinishList()
+    }
+    method toJsonListFloat = \mod(lst: list(float)) {
+        toJsonStartList()
+        val lastinx = lst.count - 1
+        each(elt^lst, inx) { self.toJsonFloat(elt); if(inx < lastinx) add(`,`) }
+        toJsonFinishList()
+    }
+    method toJsonListLabel = \mod(lst: list(label)) {
+        toJsonStartList()
+        val lastinx = lst.count - 1
+        each(elt^lst, inx) { self.toJsonLabel(elt); if(inx < lastinx) add(`,`) }
+        toJsonFinishList()
+    }
+    method toJsonListString = \mod(lst: list(string)) {
+        toJsonStartList()
+        val lastinx = lst.count - 1
+        each(elt^lst, inx) { self.toJsonString(elt); if(inx < lastinx) add(`,`) }
+        toJsonFinishList()
+    }
+
+}
+
+// The plan for toJson is that a call to toJson(jstrmr, aT) where aT:T, expands to a function named toJsonSynthdK that is
+// written specifically to encode type T. We keep a list of types for which specific toJson encoders exist, the first 5 are
+// for base types. Each new type encountered goes onto a memoized list named tjTypes, there's a corresponding function named
+// toJsonSynthdK for K the index in tjTypes. Non-basic types can be list and tuple types. The toJsonRW xprftn generates
+// a call to an existing toJsonSynthdK function if the type is known, else allocates the next slot in the list and returns
+// a call to either toJsonList or toJsonTuple with the jstrmr, the arg to encode (aT), and the index. So now instead of
+// toJson(jstrmr, aT) we have, say, toJsonTuple(jstrmr, aT, 7). This matches a different rwrule that actually synthesizes
+// toJsonSynthd7, defines it as a new gbl function, and returns a call to toJsonSynthd7(jstrmr, aT). The process of defining
+// this function may cause new calls to toJson to be synthesized, with types used by the attributes of the tuple (or for
+// lists, the elttype of the list). These get rewritten in turn until all the types that occur in the T have their toJson
+// functions.
+
+// Define base type versions of toJson using the conventions of the rwrule scheme set out below, so we can put the types in the
+// rewritestore.tjTypes attrib and look them up easily.
+// THE NAMES AND TYPES MUST MATCH THE DECLARATION OF tjValues for these 5 functions
+val toJsonSynthd0 = \mod(js: jsonStreamer, ent:integer) { js.add(stringify(ent)) }
+val toJsonSynthd1 = \mod(js: jsonStreamer, ent:float) { js.add(stringify(ent)) }
+val toJsonSynthd2 = \mod(js: jsonStreamer, ent:string) { js.add(js.writeString(ent)) }
+val toJsonSynthd3 = \mod(js: jsonStreamer, lbl: label) { js.add("\""); js.add(lbl); js.add("\"") }
+val toJsonSynthd4 = \mod(js: jsonStreamer, boolval: boolean) { val strg = boolval ? "true" : "false"; js.add(strg) }
+
+given(T::entity) {
+    val toJsonList: \(jsonStreamer, T, integer) -> nothing
+    val toJsonTuple: \(jsonStreamer, T, integer) -> nothing
+    val toJsonPList: \(jsonStreamer, T, integer, string, string) -> nothing
+    val toJsonPTuple: \(jsonStreamer, T, integer, string, string) -> nothing
+
+    val toJsonRW = \xprftn() {
+        val ent: T, js:jsonStreamer
+        matchquery("toJson(js, ent)")
+        // we use two pll lists: tjTypes has types, tjValues has encoding functions for corresponding types
+        // Note that extra calls to rewriteStoreDeclare (with same symbol) are harmless.
+        rewriteStoreDeclare(tjTypes, list(type), [integer, float, string, label, boolean])
+        rewriteStoreDeclare(tjValues, list(xprterm), [toJsonSynthd0, toJsonSynthd1, toJsonSynthd2, toJsonSynthd3, toJsonSynthd4])
+        val typIndex = rewriteStoreGet(tjTypes.index(T))
+        if(typIndex != nil) {
+            val rwftnsym = rewriteStoreGet(tjValues[typIndex])
+            skipIf(rwftnsym.ident == :__)
+            mkterm(:funcall, rwftnsym, [js, ent])
+        } else {
+            val synthIndex = rewriteStoreGet(tjTypes.count)
+            val ftnname = "toJsonSynthd" + stringify(synthIndex)
+            rewriteStoreSet(tjTypes, pushb(tjTypes, T))
+            rewriteStoreSet(tjValues, pushb(tjValues, mksym("__", integer)))      // fake symbol to say not yet defined
+            var generatorName = "toJsonList"
+            if(family(T) == :tuple) generatorName = "toJsonTuple"
+            else if(family(T) != :list) exit("cannot generate ToJson")
+            val rwftntype = mktype(:function, [type(js), T, integer], nothing, :mod)
+            val newsym = mksym(generatorName, rwftntype)
+            mkterm(:funcall, newsym, [js, ent, synthIndex])
+        }
+    }
+    // This handles the special RWO call inserted by toJsonRW to create toJson ftns for list types.
+    // It returns the defined function, so the matching expr is placed in that part of the funcall.
+    // Here's the code we create:
+    //	val toJsonSynthd# = \(jstrm:jsonStreamer, ent:list(T)) {
+    //		jstrm.add("[")
+    //		var lastinx = count(ent) - 1
+    //		each(_vi^ent, inx) {
+    //			jstrm.toJson(_vi)
+    //			if(inx < lastinx) jstrm.add(",")
+    //		}
+    //		jstrm.add("]")
+    //	}
+    val toJsonListRW = \xprftn() {
+        val ent0: T, js:jsonStreamer, inx:integer
+        matchquery("toJsonList(js, ent0, inx)")
+        rewriteStoreDeclare(tjTypes, list(type), [integer, float, string, label, boolean])
+        rewriteStoreDeclare(tjValues, list(xprterm), [toJsonSynthd0, toJsonSynthd1, toJsonSynthd2, toJsonSynthd3, toJsonSynthd4])
+        val ftnname = "toJsonSynthd" + stringify(inx)
+        // check if already defined, else do it now. Note that toJson checks this too, but we still need this check,
+        // since it might get defined meanwhile (if there are 2+ uses of the same list type).
+        val cursym = rewriteStoreGet(tjValues[inx])
+        if(cursym.ident != :__) mkterm(:funcall, cursym, [js, ent0])
+        else {
+            val jsT = type(js)
+            val ftntype = mktype(:function, [jsT, T], nothing, :mod)
+            val elttyp = elttype(T)     // works because T must be a list type
+            val itervar = mksym(gensym(), elttyp)
+            val jsarg = mksym(:jstrm, jsT)
+            val entarg = mksym(:ent, T)
+            val inxvar = mksym(:inx, integer)
+            val addmethod = methodNamed(jsT, :add)
+            val lastinxvar = mksym(:lastinx, integer, mkterm(:funcall, methodNamed(integer, :-), [mkterm(:funcall, methodNamed(T, :count), [entarg]), 1]))
+            val lastinx = mkterm(:val, lastinxvar)
+            val comma = mkterm(:funcall, addmethod, [jsarg, ","])
+            // eachbody is "jstrm.toJsonX(itervar); if(inx < lastinx) add(`,`)"
+            val bodyfn = methodNamed(jsT, :toJson)
+            val ifstmt = mkterm(:if, mkterm(:funcall, methodNamed(integer, :<), [inxvar, lastinxvar]), mkstmts([comma]))
+            val eachbody = mkstmts([mkterm(:funcall, bodyfn, [jsarg, itervar]), ifstmt])
+            val eachstmt = mkterm(:each, itervar, entarg, eachbody, inxvar)
+            val open = mkterm(:funcall, addmethod, [jsarg, "["])
+            val close = mkterm(:funcall, addmethod, [jsarg, "]"])
+            val ftnstmts = mkstmts([open, lastinx, eachstmt, close])
+            val newftn = mkftn(ftntype, [jsarg, entarg], ftnstmts)
+            val newsym = mksym(ftnname, ftntype, newftn)
+            defineGlobal(newsym)
+            rewriteStoreSet(tjValues[inx], newsym)
+            mkterm(:funcall, newsym, [js, ent0])
+        }
+    }
+    // This handles the special RWO call inserted by toJsonRW to create toJson ftns for tuple types
+    // Here's the code we create:
+    //	val toJsonSynthd# = \(jstrm:jsonStreamer, ent:T) {
+    //		jstrm.add("{")
+    //		var lastinx = count(ent) - 1
+    //		each(atrb^attibutes(T), inx) {
+    //		    jstrm.add("\"")
+    //		    jstrm.add(atrb.ident)
+    //		    jstrm.add("\":")
+    //			jstrm.toJson(ent.atrb)
+    //			if(inx < lastinx) jstrm.add(",")
+    //		}
+    //		jstrm.add("}")
+    //	}
+    val toJsonTupleRW = \xprftn() {
+        val ent0: T, js:jsonStreamer, inx: integer
+        matchquery("toJsonTuple(js, ent0, inx)")
+        rewriteStoreDeclare(tjTypes, list(type), [integer, float, string, label, boolean])
+        rewriteStoreDeclare(tjValues, list(xprterm), [toJsonSynthd0, toJsonSynthd1, toJsonSynthd2, toJsonSynthd3, toJsonSynthd4])
+        val ftnname = "toJsonSynthd" + stringify(inx)
+        val cursym = rewriteStoreGet(tjValues[inx])
+        if(cursym.ident != :__) mkterm(:funcall, cursym, [js, ent0])
+        else {
+            val jsT = type(js)
+            val ftntype = mktype(:function, [jsT, T], nothing, :mod)
+            val jsarg = mksym(:jstrm, jsT)
+            val entarg = mksym(:ent, T)
+            val addfn = methodNamed(jsT, :add)
+            val open = mkterm(:funcall, addfn, [jsarg, "{"])
+            val toJsonFn = methodNamed(jsT, :toJson)
+            var cnvnstmts: list(xprterm) = [open]
+            val lastinx = count(attributes(T)) - 1
+            each(atrb^attributes(T), ainx) {
+                cnvnstmts.pushb(mkterm(:funcall, addfn, [jsarg, "\""]))
+                cnvnstmts.pushb(mkterm(:funcall, addfn, [jsarg, atrb.ident]))
+                cnvnstmts.pushb(mkterm(:funcall, addfn, [jsarg, "\":"]))
+                cnvnstmts.pushb(mkterm(:funcall, toJsonFn, [jsarg, mkterm(:symchain, entarg, atrb)]))
+                if(ainx < lastinx) cnvnstmts.pushb(mkterm(:funcall, addfn, [jsarg, ","]))
+            }
+            cnvnstmts.pushb(mkterm(:funcall, addfn, [jsarg, "}"]))
+            val ftnstmts = mkstmts(cnvnstmts)
+            val newftn = mkftn(ftntype, [jsarg, entarg], ftnstmts)
+            val newsym = mksym(ftnname, ftntype, newftn)
+            defineGlobal(newsym)
+            rewriteStoreSet(tjValues[inx], newsym)
+            mkterm(:funcall, newsym, [js, ent0])
+        }
+    }
+
+    // Here's the pretty printing version of the rewrite rules. Use the same rewriteStore items but different ftn names so that
+    // pretty and non-pretty per-type ftns don't get confused.
+    // Start with a rule that sets up the recursion point, toJsonPretty0.
+    val toJsonPrettyRW = \xprftn() {
+        val ent: T, js:jsonStreamer, sep:string
+        matchquery("toJsonPretty(js, ent, sep)")
+        val jsT = type(js)
+        val bodyfn = methodNamed(jsT, :toJsonPretty0)
+        mkterm(:funcall, bodyfn, [js, ent, sep, sep])
+    }
+
+    // The two string args serve as separator current state and update value.
+    val toJsonPretty0RW = \xprftn() {
+        val ent: T, js:jsonStreamer, cursep:string, sep0:string
+        matchquery("toJsonPretty0(js, ent, cursep, sep0)")
+        // we use two pll lists: tjTypes has types, tjValues has encoding functions for corresponding types
+        // Note that extra calls to rewriteStoreDeclare (with same symbol) are harmless.
+        rewriteStoreDeclare(tjPTypes, list(type), [integer, float, string, label, boolean])
+        rewriteStoreDeclare(tjPValues, list(xprterm), [toJsonSynthd0, toJsonSynthd1, toJsonSynthd2, toJsonSynthd3, toJsonSynthd4])
+        val typIndex = rewriteStoreGet(tjPTypes.index(T))
+        if(typIndex != nil) {
+            val rwftnsym = rewriteStoreGet(tjPValues[typIndex])
+            skipIf(rwftnsym.ident == :__)
+            if(typIndex < 5) mkterm(:funcall, rwftnsym, [js, ent])
+            else mkterm(:funcall, rwftnsym, [js, ent, cursep, sep0])
+        } else {
+            val synthIndex = rewriteStoreGet(tjPTypes.count)
+            rewriteStoreSet(tjPTypes, pushb(tjPTypes, T))
+            rewriteStoreSet(tjPValues, pushb(tjPValues, mksym("__", integer)))      // fake symbol to say not yet defined
+            var generatorName = "toJsonPList"
+            if(family(T) == :tuple) generatorName = "toJsonPTuple"
+            else if(family(T) != :list) exit("cannot generate ToJson")
+            val rwftntype = mktype(:function, [type(js), T, integer, string, string], nothing, :mod)
+            val newsym = mksym(generatorName, rwftntype)
+            mkterm(:funcall, newsym, [js, ent, synthIndex, cursep, sep0])
+        }
+    }
+    // This is analogous to the earlier rule toJsonListRW but slightly more complicated since it's pretty printing.
+    // Here's the code we synthesize
+    // 	val toJsonSynthd# = \(jstrm:jsonStreamer, ent:list(T), cursep:string, sep0:string) {
+    // 		jstrm.add("[")
+    // 		val lastinx = count(ent) - 1
+    // 		val newindent = "\n" + cursep
+    // 		each(_vi^ent, inx) {
+    // 			jstrm.add(newindent)
+    // 			jstrm.toJsonPretty0(_vi, cursep + sep0, sep0)
+    // 			if(inx < lastinx) jstrm.add(",") else jstrm.add(newindent)
+    // 		}
+    // 		jstrm.add("]")
+    // 	}
+    val toJsonListPrettyRW = \xprftn() {
+        val ent0: T, js:jsonStreamer, inx:integer, cursep:string, sep0:string
+        matchquery("toJsonPList(js, ent0, inx, cursep, sep0)")
+        rewriteStoreDeclare(tjPTypes, list(type), [integer, float, string, label, boolean])
+        rewriteStoreDeclare(tjPValues, list(xprterm), [toJsonSynthd0, toJsonSynthd1, toJsonSynthd2, toJsonSynthd3, toJsonSynthd4])
+        // check if already defined, else do it now. Note that toJson checks this too, but we still need this check,
+        // since it might get defined meanwhile (if there are 2+ uses of the same list type).
+        val cursym = rewriteStoreGet(tjPValues[inx])
+        if(cursym.ident != :__) mkterm(:funcall, cursym, [js, ent0, cursep, sep0])
+        else {
+            val jsT = type(js)
+            val ftntype = mktype(:function, [jsT, T, string, string], nothing, :mod)
+            val elttyp = elttype(T)     // works because T must be a list type
+            val itervar = mksym(gensym(), elttyp)
+            val jsarg = mksym(:jstrm, jsT)
+            val entarg = mksym(:ent, T)
+            val curseparg = mksym(:cursep, string)
+            val sep0arg = mksym(:sep0, string)
+            val inxvar = mksym(:inx, integer)
+            val addmethod = methodNamed(jsT, :add)
+            val lastinxvar = mksym(:lastinx, integer, mkterm(:funcall, methodNamed(integer, :-), [mkterm(:funcall, methodNamed(T, :count), [entarg]), 1]))
+            val lastinx = mkterm(:val, lastinxvar)
+            val newindentvar = mksym(:newindent, string, mkterm(:funcall, methodNamed(string, :+), ["\n", curseparg]))
+            val newindent = mkterm(:val, newindentvar)
+            val comma = mkterm(:funcall, addmethod, [jsarg, ","])
+            // eachbody is "jstrm.toJsonX(itervar); if(inx < lastinx) add(`,`)"
+            val bodyfn = methodNamed(jsT, :toJsonPretty0)
+            val addni = mkterm(:funcall, addmethod, [jsarg, newindentvar])
+            val ifstmt = mkterm(:if, mkterm(:funcall, methodNamed(integer, :<), [inxvar, lastinxvar]), mkstmts([comma]), mkstmts([addni]))
+            val sep2 = mkterm(:funcall, methodNamed(string, :+), [curseparg, sep0arg])
+            val eachbody = mkstmts([addni, mkterm(:funcall, bodyfn, [jsarg, itervar, sep2, sep0arg]), ifstmt])
+            val eachstmt = mkterm(:each, itervar, entarg, eachbody, inxvar)
+            val open = mkterm(:funcall, addmethod, [jsarg, "["])
+            val close = mkterm(:funcall, addmethod, [jsarg, "]"])
+            val ftnstmts = mkstmts([open, lastinx, newindent, eachstmt, close])
+            val newftn = mkftn(ftntype, [jsarg, entarg, curseparg, sep0arg], ftnstmts)
+            val newsym = mksym("toJsonPSynthd" + stringify(inx), ftntype, newftn)
+            defineGlobal(newsym)
+            rewriteStoreSet(tjPValues[inx], newsym)
+            mkterm(:funcall, newsym, [js, ent0, cursep, sep0])
+        }
+    }
+    // This handles the special RWO call inserted by toJsonRW to create toJson ftns for tuple types
+    // Here, the code we create is specific to the tuple type: we unroll the each loop because we can't run through
+    // the attributes at runtime. For each attribute "atrb" we generate the following code:
+    //   jstrm.add("\"")
+    //   jstrm.add(atrb.ident)
+    //   jstrm.add("\":")
+    //	 jstrm.toJsonPretty0(ent.atrb, cursep, sep0)
+    //	 if(inx < lastinx) jstrm.add(",")
+    // We wrap this pretty much same as the list version, except with {} instead of []. Since the list elts are
+    // all same type, we can synth an each stmt there, which is a good thing because whereas we know what the attributes
+    // are here, we don't know how many list elts there are.
+    val toJsonTuplePrettyRW = \xprftn() {
+        val ent0: T, js:jsonStreamer, inx: integer, cursep:string, sep0:string
+        matchquery("toJsonPTuple(js, ent0, inx, cursep, sep0)")
+        rewriteStoreDeclare(tjPTypes, list(type), [integer, float, string, label, boolean])
+        rewriteStoreDeclare(tjPValues, list(xprterm), [toJsonSynthd0, toJsonSynthd1, toJsonSynthd2, toJsonSynthd3, toJsonSynthd4])
+        val ftnname = "toJsonPSynthd" + stringify(inx)
+        val cursym = rewriteStoreGet(tjPValues[inx])
+        if(cursym.ident != :__) mkterm(:funcall, cursym, [js, ent0, cursep, sep0])
+        else {
+            val jsT = type(js)
+            val ftntype = mktype(:function, [jsT, T, string, string], nothing, :mod)
+            val jsarg = mksym(:jstrm, jsT)
+            val entarg = mksym(:ent, T)
+            val curseparg = mksym(:cursep, string)
+            val sep0arg = mksym(:sep0, string)
+            val addfn = methodNamed(jsT, :add)
+            val newindentvar = mksym(:newindent, string, mkterm(:funcall, methodNamed(string, :+), ["\n", curseparg]))
+            val open = mkterm(:funcall, addfn, [jsarg, "{"])
+            val toJsonFn = methodNamed(jsT, :toJsonPretty0)
+            var cnvnstmts: list(xprterm) = [open, mkterm(:val, newindentvar)]
+            val lastinx = count(attributes(T)) - 1
+            each(atrb^attributes(T), ainx) {
+                cnvnstmts.pushb(mkterm(:funcall, addfn, [jsarg, newindentvar]))
+                cnvnstmts.pushb(mkterm(:funcall, addfn, [jsarg, "\""]))
+                cnvnstmts.pushb(mkterm(:funcall, addfn, [jsarg, atrb.ident]))
+                cnvnstmts.pushb(mkterm(:funcall, addfn, [jsarg, "\":"]))
+                val sep2 = mkterm(:funcall, methodNamed(string, :+), [curseparg, sep0arg])
+                cnvnstmts.pushb(mkterm(:funcall, toJsonFn, [jsarg, mkterm(:symchain, entarg, atrb), sep2, sep0arg]))
+                if(ainx < lastinx) cnvnstmts.pushb(mkterm(:funcall, addfn, [jsarg, ","]))
+            }
+            cnvnstmts.pushb(mkterm(:funcall, addfn, [jsarg, "}"]))
+            val ftnstmts = mkstmts(cnvnstmts)
+            val newftn = mkftn(ftntype, [jsarg, entarg, curseparg, sep0arg], ftnstmts)
+            val newsym = mksym(ftnname, ftntype, newftn)
+            defineGlobal(newsym)
+            rewriteStoreSet(tjPValues[inx], newsym)
+            mkterm(:funcall, newsym, [js, ent0, cursep, sep0])
+        }
+    }
+}
+rewrite(toJsonRW)
+rewrite(toJsonListRW)
+rewrite(toJsonTupleRW)
+rewrite(toJsonPrettyRW)
+rewrite(toJsonPretty0RW)
+rewrite(toJsonListPrettyRW)
+rewrite(toJsonTuplePrettyRW)
+

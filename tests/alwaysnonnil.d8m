@@ -1,0 +1,10 @@
+// alwaysnonnil: demonstrate that list.index (for example) are replaced with versions tailored for non-nil
+import go "math/rand"
+val adiX = [1, 2, 0, 0, -1, 3]
+val foo = \(adi: list(integer)) {
+    val randx = rand.New(rand.NewSource(1))
+    val absInx = always(x~adi.index(-1), x!=nil)
+    val nParams = randx.Intn(12)
+    if(absInx > nParams) println("greater") else println("less")
+}
+foo(adiX)

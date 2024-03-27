@@ -1,0 +1,49 @@
+// some linear interpolation code
+// My intention is to provide a few variants in the fullness of time. For example, interpUnordered (not written)
+// could handle interpolants in any order by storing all slopes and using binsearch for indices.
+
+export interpFSM
+
+// InterpFSM holds state to generate a sequence of float interpolants from a non-decreasing series of x:float query values.
+// There are three methods: reset, exists and next. Reset restarts the sequence. Exists returns whether a proposed x value
+// can be interpolated in the given xs, ys series. This approach allows users to have their own policy for values outside
+// the range. Assuming exists(x) is true, next(x) returns the interpolant of x AND updates self to assume future requests will be >= x.
+// It does a linear search for the indices of values in xs, which should be strictly increasing. This many not be optimal
+// if xs is long and only a few points are sampled.
+// I think the performance tradeoff on slope calculation is good: if few points are sampled, then only needed slopes are
+// calculated, but if an interval is used more than once, its slope is only calculated once. This makes sense only under
+// the assumption that we step left to right through a sequence of interpolants.
+// Panic unless xs and ys have same length and that length is > 1.
+val interpFSM = extend tuple(curinx: integer, xs, ys: list(float), slope:float, noslope:boolean) where {
+    assert xs.count != 0
+    method lithook = \mod(xlst, ylst: list(float)) {
+        if(xlst.count == 0 || ylst.count != xlst.count) exit("interpFSM")
+        xs = xlst
+        ys = ylst
+        curinx = 0
+        noslope = true
+        //println("creating fsm, xs=", xs.{to_s(this,2)}, "; ys=", ys.{to_s(this,2)})
+    }
+
+    // Set internal state to same as newly constructed.
+    method reset = \mod() -> nothing { curinx = 0; noslope = true }
+
+    // true if self can supply an interpolant at x
+    method exists = \(x:float) {
+        //println("exists:", x.to_s(1), curinx)
+        x >= xs[curinx] && x <= xs.last
+    }
+
+    // Return the interpolant for x and update state, assuming the next x given will be >= this one.
+    // Assume self.exists(x).
+    method next = \mod(x:float) -> float {
+        //println("next", to_s(x, 2))
+        if(x == xs.last) ys[ys.count - 1]
+        else {
+            while(xs[curinx+1] <= x) { curinx += 1; noslope = true }
+            if(noslope) { slope = (ys[curinx+1] - ys[curinx]) / (xs[curinx+1] - xs[curinx]); noslope = false }
+            //println(curinx, to_s(xs[curinx], 1), to_s(ys[curinx+1], 1), to_s(slope, 3), to_s(ys[curinx] + slope * (x - xs[curinx]), 3))
+            ys[curinx] + slope * (x - xs[curinx])
+        }
+    }
+}

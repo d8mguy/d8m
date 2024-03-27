@@ -1,0 +1,133 @@
+
+// test a second grammar incl some testing of the scan methods
+
+load("modules/lexparse")      // Get all the symbols, not just the exported ones
+
+// concat these with wgpure in the absence of d8m grmr
+val dependsProdns: list(rawProdn) = [
+    ["identlist", :general, "ident"],
+    ["identlist", :general, "ident , identlist*"],
+    ["exprlist", :general, "expr"],
+    ["exprlist", :general, "expr , exprlist*"],
+    ["funcall", :expr, "ident ( )"],
+    ["funcall", :expr, "ident ( exprlist )"],
+    ["stmtlist", :general, "stmt"],
+    ["stmtlist", :general, "stmt ;"],
+    ["stmtlist", :general, "stmt ; stmtlist*"],
+    ["stmts", :stmt, "{ }"],
+    ["stmts", :stmt, "{ stmtlist* }"]
+]
+
+val wgpureProdns: list(rawProdn) = [
+    ["listx", :expr, "list ( ident )"],
+    ["listx", :expr, "list ( listx )"],
+    ["typex", :general, "ident"],
+    ["typex", :general, "listx"],
+    ["colonpair", :general, "ident : typex"],
+    ["colonpairlist", :general, "colonpair"],
+    ["colonpairlist", :general, "colonpair , colonpairlist*"],
+    ["identopttyp", :general, "ident"],
+    ["identopttyp", :general, "colonpair"],
+    ["identopttyplist", :general, "identopttyp"],
+    ["identopttyplist", :general, "identopttyp , identopttyplist*"],
+    ["responselit", :general, "{ identlist }"],
+    ["getpost", :general, "GET"],
+    ["getpost", :general, "POST"],
+    ["request", :general, "getpost ( )"],
+    ["request", :general, "getpost ( identopttyplist )"],
+    ["respx", :general, "ident"],
+    ["respx", :general, "responselit"],
+    ["respx", :general, "( ident , ident )"],
+    ["respx", :general, "( ident , responselit )"],
+    ["responsex", :general, "response respx"],
+    ["responsex", :general, "response respx or respx"],
+    ["responsex", :general, "response respx or respx or respx"],
+    ["transitionstmt", :stmt, "transition ident strg => request then ident"],
+    ["transitionstmt", :stmt, "transition ident strg => request then ident responsex"],
+    ["statestmt", :stmt, "state colonpairlist"],
+    ["psx", :general, "funcall"],
+    ["psx", :general, "ident stmts"],
+    ["psx", :general, "funcall stmts"],
+    ["pgstmt", :stmt, "pagespec psx"],
+    // Both javascript and css are not parseable with these definitions since stmts doesn't include javascript or css
+    // constructs, but they are scannable since {} is a bracket pair.
+    ["jsstmt", :stmt, "javascript stmts"],
+    ["cssstmt", :stmt, "css stmts"],
+    ["respstmt", :stmt, "response ident responselit"],
+    ["compstmt", :stmt, "components strg"],
+    ["initstmt", :stmt, "initial ident , psx"]
+]
+
+val wgDefn = [langDefn: [], dependsProdns + wgpureProdns, [],
+    ["transition", "state", "pagespec", "javascript", "css", "then", "response", "components", "initial", "GET", "POST", "list", "or"],
+    d8mBrackets, d8mComments, d8mSeparators, true]
+
+// long string...
+val testspec = `
+
+transition SaveFile "save" => POST(newFilename: string, deletedCols, fieldnames, fielddescs, fieldunits)
+    then saveFile response (editPage, fileResponseObj)
+
+// this is for an incrl xhr called when a missingCode is edited on the cleanup page
+transition cleanupMissingCode1 "editMCPre" => GET(index: integer, value: string) then editMissingPre
+    response {anomalous}
+
+// open a file and either go straight to edit or first to cleanup
+transition FileResponse "open" => GET(filepath: string, filename: string) then openFile
+    response (editPage, fileResponseObj) or (cleanupPage, cleanupResponse)
+
+// this very similar transition is for when a missingCode is edited on the edit page
+transition cleanupMissingCode2 "editMC" => GET(index: integer, value: string) then editMissing
+    response {fieldfacts}
+
+javascript {
+    import { Delete } from 'react-feather'
+}
+
+state deletedCols: list(integer), nCols: integer
+state anychange: boolean, fileResponseIndex: integer
+state factoids: list(string), fieldnames: list(string), fielddescs: list(string)
+state fieldqtys: list(string), fieldbaseunits: list(string), fieldunits: list(string), fieldfacts: list(list(string))
+state filename: string, fieldcats: list(string)
+state dataTable: list(list(string))
+state missingCodes: list(string), anomalous: list(integer), excluded: list(integer)
+
+response fileResponseObj {fileResponseIndex, factoids, missingCodes, nCols, dataTable,
+                 fieldnames, fielddescs, fieldunits, fieldcats, fieldfacts}
+response cleanupResponse {fileResponseIndex, factoids, missingCodes, nCols, dataTable,
+                 anomalous, excludedIndices}
+
+// user excludes a line on cleanup page
+transition cleanupExcluded "editExcl" => GET(linenum: integer) then editExcluded
+
+// user says cleanup is done
+transition finishCleanup "cleanedup" => GET() then cleanupDone response (editPage, fileResponseObj)
+
+transition CloseFile "close" => GET() then closeFile response startPage
+
+`
+// ...end of long string
+
+val driver = \imp() {
+    var ps = [parseState: wgDefn]
+    ps.bytes = testspec; ps.cxt.clear()
+    ps.nxToken()
+    while(ps.cxt.toktype != "end") {
+        val tkn = ps.cxt.tknval
+        val b4 = ps.cxt.ofs - tkn.count
+        if(tkn == "css" || tkn == "javascript") {
+            ps.scanStmt()
+            val after = ps.prevtkn.ofs
+            val strgform = b4 <= after ? cvt(ps.bytes[b4...after], string) : "!!!!!"
+            println("start: #{b4}; end: #{after}", strgform)
+        } else {
+            var trm = ps.parseStmt()
+            val after = ps.prevtkn.ofs
+            var exit = false
+            if(trm == nil) { trm = ps.error; exit = true }
+            println("start: #{b4}; end: #{after}", trm == nil ? "nil" : stringify(trm))
+            if(exit) break
+        }
+    }
+}
+driver()

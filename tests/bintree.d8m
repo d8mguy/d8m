@@ -1,0 +1,11 @@
+import "bintree" melted
+val btiT = bintree(integer)
+val trybin = \imp(x : integer) {
+    var abt = [btiT: x]
+    val l1 = abt.addLeft(x+1, abt.root)
+    abt.addLeft(x+3, l1)
+    abt.addRight(x+2, l1)
+    abt.addRight(x-1, abt.root)
+    abt.preorder()
+}
+trybin(12)

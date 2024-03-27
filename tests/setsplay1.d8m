@@ -1,0 +1,18 @@
+// setsplay1 (aka splay1 mapped from set)
+import "splay" melted
+import "set" melted
+val isetT = set(integer)
+var ast = [isetT: 1, 6, 2, 18, 33, 7]
+applyST(splaytree(integer), ast)
+val trysplay = \mod(st : isetT) {
+	var answers : list(boolean) = []
+	st.add(15)
+	st.add(25)
+	answers.pushb(25 in st)	    // true
+	st.remove(25)
+	answers.pushb(25 in st)   	// false
+	st.remove(6)
+	answers.pushb(6 in st)		// false
+	answers
+}
+[a~trysplay(ast), b~ast.{this}]

@@ -1,0 +1,23 @@
+// This test isn't about lininterp but to ensure that the case clauses get wrapped in stmts so that backend doesn't move
+// code out of the case stmt.
+import "num/lininterp"
+import go "math/rand"
+
+val foo = \imp() {
+    val randx = rand.New(rand.NewSource(1))
+    var compares: list(float) = []
+    val xvals0 = (1..10).{ 4.0 + 1.5*this }
+    val xvals1 = (1..10).{ 3.0 + 1.9*this }
+    val cvals0 = (1..10).{ 15.0 + 0.6*this }
+    val cvals1 = (1..10).{ 20.0 + 1.2*this }
+    var fsm = [lininterp.interpFSM: xvals0, cvals0]
+    val cmprOpts = 1+randx.Intn(3)
+    case {
+        cmprOpts == 1 => compares = [x0~xvals0, y0~cvals0].xp.{ fsm.exists(x0) ? y0/fsm.next(x0) : 0.0 }
+        cmprOpts == 2 => compares = [x0~xvals0, y0~cvals0].xp.{ fsm.exists(x0) ? y0 - fsm.next(x0) : -1.0 }
+        cmprOpts == 3 => compares = [x0~xvals1, y0~cvals1].xp.{ fsm.exists(x0) ? y0/fsm.next(x0) : 0.0 }
+        cmprOpts == 4 => compares = [x0~xvals1, y0~cvals1].xp.{ fsm.exists(x0) ? y0 - fsm.next(x0) : -1.0 }
+    }
+    compares
+}
+foo()

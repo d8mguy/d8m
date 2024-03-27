@@ -1,0 +1,33 @@
+// This is mainly a test for my leap day counting algo
+val leapDays = \imp(y1, y2: integer) {
+    val y1mod4 = y1 % 4
+    var ly0 = y1      // ly0 will be first leap year >= y1
+    if(y1mod4 > 0) ly0 += 4 - y1mod4
+    if(ly0%100 == 0 && ly0%400 != 0) ly0 += 4
+    if(ly0 >= y2) 0
+    else {
+        // lycount0 is the count of LY's between ly0 and y2 uncorrected for centuries
+        // note: add 1 up front to count ly0 but remove one at the end to not count if y2 is a LY
+        var lycount0 = 1 + (y2 - (ly0 + 1))/4
+        val centcount = (y2/100) - (ly0/100)
+        val cent4count = (y2/400) - (ly0/400)
+        // println("ld(#{y1},#{y2}):", ly0, lycount0, centcount, cent4count)
+        (lycount0 - centcount) + cent4count
+    }
+}
+val foo = \imp() {
+    val y1s = [1999, 1999, 2000, 2000, 2000, 2000, 2000, 2001, 2001, 2001, 1900, 1900, 1801]
+    val y2s = [1999, 2000, 2000, 2001, 2003, 2004, 2005, 2003, 2004, 2010, 2000, 2001, 2023]
+    val want = [0,    0,    0,    1,     1,    1,    2,    0,    0,    2,   24,   25,   54]
+    val triplT = tuple(y1, y2, outp:list(integer))
+    var nbad = 0
+    each(tripl^xp([triplT: y1s, y2s, want])) {
+        val rslt = leapDays(tripl.y1, tripl.y2)
+        unless(rslt == tripl.outp) {
+            println("fail for [#{tripl.y1}, #{tripl.y2}]: want #{tripl.outp} but got #{rslt}")
+            nbad += 1
+        }
+    }
+    nbad
+}
+foo()

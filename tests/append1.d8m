@@ -1,0 +1,8 @@
+// test for list.append method
+val lst1 = [0, 4, 3, 4, 27]
+val foo = \imp(lst : list(integer)) {
+    var ret = copy(lst)
+    ret.append(lst)
+    ret
+}
+foo(lst1)

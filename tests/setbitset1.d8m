@@ -1,0 +1,12 @@
+import "bitset" melted
+import "set" melted
+val quintiles = label(:first, :second, :third, :fourth, :fifth)
+val qset = set(quintiles)
+applyST(bitset0, \(s: qset) { true } )
+val s0 = [qset: :first, :third]
+val tryQset = \() {
+    val oq = [qset: :second, :first, :fifth]
+    println("first subset: ", subset(s0, oq))
+    println("intersect: ", intersection(s0, oq))
+}
+tryQset()

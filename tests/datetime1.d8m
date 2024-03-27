@@ -1,0 +1,81 @@
+// this is less a compiler test than a moderately thorough test of the datetime module
+
+import "datetime" melted
+
+val foo = \imp() {
+    val dates1 = ["1999", "1999", "2000", "2000", "2000", "2000", "2000", "2001", "2001", "2001", "1900", "1900", "1801"]
+    val dates2 = ["1999/10/01", "1999/10/02", "2000/01/03", "2000/01/05", "2000/02/05", "2000/04/04", "2000/05/6", "2001/6/7", "2001/08/08", "2001/09/09"]
+    // 1. test year only dates
+    var dt1 = [datetimes: false, dates1]
+    unless(dt1.offsets.count == dates1.count && dt1.dt.baseunit == :year) exit("dates1 fails")
+    dt1.calcStats()
+    unless(dt1.consec == 0 && !dt1.monotone && dt1.minofs == cvt(lshift(1801,9),integer) && dt1.maxofs == cvt(lshift(2001,9),integer)) exit("dates1 stats fails")
+    // 2. test year first dates
+    var dt2 = [datetimes: false, dates2]
+    unless(dt2.offsets.count == dates2.count && dt2.dt.baseunit == :day) exit("dates2 fails")
+    dt2.calcStats()
+    unless(dt2.consec == 0 && dt2.monotone) exit("dates2 stats fails")
+    // 3. Test US style; not mix wrt commas, abbrev vs full month names
+    val dates3 = ["Oct 1, 1999", "Oct 2, 1999", "Jan 3, 2000", "Jan 5, 2000", "Feb 5, 2000", "Apr 4 2000", "May 6 2000",
+        "June 7 2001", "August 8 2001", "Sep 9 2001"]
+    var dt3 = [datetimes: true, dates3]
+    unless(dt3.dt.baseunit == :day) exit("dates3 fails")
+    unless(dt2.offsets == dt3.offsets) exit("expected dt2 and dt3 to have same values")
+    dt3.calcStats()
+    unless(dt3.consec == 0 && dt3.monotone && dt3.dt.toString(dt3.minofs) == "Oct 1, 1999" && dt3.dt.toString(dt3.maxofs) == "Sep 9, 2001")
+        exit("dates3 stats fails")
+    val dt2StrgExp = ["1999/10/01", "1999/10/02", "2000/01/03", "2000/01/05", "2000/02/05", "2000/04/04", "2000/05/06", "2001/06/07", "2001/08/08", "2001/09/09"]
+    val dt3StrgExp = ["Oct 1, 1999", "Oct 2, 1999", "Jan 3, 2000", "Jan 5, 2000", "Feb 5, 2000", "Apr 4, 2000", "May 6, 2000", "Jun 7, 2001", "Aug 8, 2001", "Sep 9, 2001"]
+    val dt2StrgAct = dt2.offsets.{dt2.dt.toString(this)}
+    val dt3StrgAct = dt3.offsets.{dt3.dt.toString(this)}
+    unless(dt2StrgExp == dt2StrgAct && dt3StrgExp == dt3StrgAct) exit("toString fail")
+    // change output format for dt3
+    dt3.dt.firstcode = :dg4
+    dt3.dt.sep = :slash
+    unless(dt3.dt.toString(dt3.minofs) == "1999/10/01") exit("fail on changed output format")
+    // exercise the month first vs day first option
+    val dates4 = ["01/02/1954", "03/04/2025", "08/12/1933", "9/5/3938"]
+    val dates4Out = ["01/02/1954", "03/04/2025", "08/12/1933", "09/05/3938"]
+    val dates4Swapped = ["02/01/1954", "04/03/2025", "12/08/1933", "05/09/3938"]
+    var dt4a = [datetimes: true, dates4]
+    var dt4b = [datetimes: false, dates4]
+    val dates4aOutAct = dt4a.offsets.{dt4a.dt.toString(this)}
+    val dates4bOutAct = dt4a.offsets.{dt4a.dt.toString(this)}
+    unless(dates4aOutAct == dates4Out) exit("dt4a fail 1")
+    unless(dates4bOutAct == dates4Out) exit("dt4b fail 1")
+    // the dt4a and dt4b repns are flipped wrt month and day; now change the output conventions
+    dt4a.dt.mn1 = false
+    unless(dt4a.offsets.{dt4a.dt.toString(this)} == dates4Swapped) exit("dt4a fail 2")
+    dt4b.dt.mn1 = true
+    unless(dt4b.offsets.{dt4b.dt.toString(this)} == dates4Swapped) exit("dt4b fail 2")
+    dt4a.dt.firstcode = :monnm
+    val dates4aM1 = dt4a.offsets.{dt4a.dt.toString(this)}
+    unless(dates4aM1 == ["2 Jan, 1954", "4 Mar, 2025", "12 Aug, 1933", "5 Sep, 3938"]) exit("dt4a fail 3")
+    dt4a.dt.mn1 = true
+    val dates4aM2 = dt4a.offsets.{dt4a.dt.toString(this)}
+    unless(dates4aM2 == ["Jan 2, 1954", "Mar 4, 2025", "Aug 12, 1933", "Sep 5, 3938"]) exit("dt4a fail 4")
+    dt4b.dt.firstcode = :monnm
+    val dates4bM1 = dt4b.offsets.{dt4b.dt.toString(this)}
+    unless(dates4bM1 == ["Feb 1, 1954", "Apr 3, 2025", "Dec 8, 1933", "May 9, 3938"]) exit("dt4b fail 3")
+    val dates5 = ["2 Jan, 1954", "4 Mar, 2025", "12 Aug, 1933", "5 Sep, 3938"]
+    var dt5 = [datetimes: false, dates5]
+    dt5.dt.firstcode = :monnm
+    //println("dt5:", dt5.offsets.{dt5.dt.toString(this)})
+    unless(dt5.offsets == dt4a.offsets) exit("dt5 fail")
+    // try some formats with times in them
+    val timeonly1 = ["12:12", "12:13", "12:13", "09:15", "23:59", "3:04"]
+    val timeonly1Out = ["12:12", "12:13", "12:13", "09:15", "23:59", "03:04"]
+    var dt6 = [datetimes: false, timeonly1]
+    unless(dt6.dt.firstcode == :dgsh && dt6.dt.baseunit == :minute && dt6.offsets.{dt6.dt.toString(this)} == timeonly1Out) exit("dt6 fail 1")
+    val dates7 = ["12/09/20 12:34", "12/09/20 12:36", "12/09/20 12:38", "12/09/20 12:40", "12/09/20 12:42", "12/09/20 12:44"]
+    var dt7 = [datetimes: false, dates7]
+    dt7.calcStats()
+    //println(dt7.offsets.{dt7.dt.toString(this)}, dt7.consec, dt7.monotone)
+    unless(dt7.dt.baseunit == :minute && dt7.consec == 2 && dt7.monotone) exit("dates7 fails")
+
+    // test the delta stuff.
+    val delta1 = [nxt~dt3.offsets.[index > 0], cur~dt3.offsets].xp.{ dt3.dt.delta(nxt, cur) }
+    unless(delta1 == [1, 93, 2, 31, 59, 32, 397, 62, 32]) exit("delta 1 fails")
+    "all good"
+}
+foo()

@@ -1,0 +1,9 @@
+import "dict" melted
+val isdict = dict(integer, string)
+val ispair = tuple(key : integer, value : string)
+val d0 = [isdict: [k~[1,5,11,15], v~["xxx", "yyy", "zzz", "www"]].xp.{[ispair: k, v]}]
+val tryDict = \() {
+    val d05 = d0[5]
+    println(d05 == nil ? "nil" : d05)
+}
+tryDict()

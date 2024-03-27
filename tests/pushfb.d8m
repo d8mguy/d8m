@@ -1,0 +1,13 @@
+// small test for combining pushf and pushb
+val prtup = tuple(a, b: integer)
+val foo = \imp() {
+    var lst1: list(integer) = []
+    var lst2: list(prtup) = []
+    each(i^1..6) {
+        val ptp = [prtup: i, i*2]
+        if(i%2 == 0) lst1.pushf(i) else lst1.pushb(i)
+        if(i%2 == 0) lst2.pushf(ptp) else lst2.pushb(ptp)
+    }
+    [a~lst1, b~lst2]
+}
+foo()

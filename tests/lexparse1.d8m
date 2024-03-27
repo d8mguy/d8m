@@ -1,0 +1,40 @@
+// basic pmzparse test: several test strings with d8m grammar
+import "lexparse" melted
+val foo = \imp() {
+    var ps = [parseState: d8mDefn]
+    val test1 = `
+    val df1 = xxx - :yyy, df2 : tuple(x: y, z: w) = [1, 5]
+    while(df1) {
+        var tst = ff(yy)
+        if(ekrj) break
+    }
+    welkrj
+    `
+    val test2 = `
+    val xxx = 1 * x - 33.5 / y.aa + 17e4
+    val yyy = \mod(z: eriu, zz: list(T)) { eriu(z) in zz || zz.count < floor(xxx) }
+    each(a^b, inx) foo(bar)
+    each(c^d) { baz(quux, 12); if(x = y || c != 15) z(12) }
+    `
+    var test3 = `
+	val xxx: tt1 = lst.{ 1 * this / y.aa }.[ this in [1, 5, 14] => index ]
+	import go "math/rand"		// line comment
+	import "set" melted
+	/*
+	 * multiline comment
+	 */
+	val yyy = xxx[0] > 12 ? 'abc' : "def"
+	val zzz = lst.{ var tmp = xxx[this] > 12; tmp ? 15 : 13 }
+	case ort {
+		t1 => { s1(); s2(xx3) }
+		else => s4 + s5
+	}
+	`
+	ps.bytes = test1; ps.cxt.clear(); ps.nxToken()
+    println(parseStmts(ps))
+	ps.bytes = test2; ps.cxt.clear(); ps.nxToken()
+    println(parseStmts(ps))
+	ps.bytes = test3; ps.cxt.clear(); ps.nxToken()
+    println(parseStmts(ps))
+}
+foo()

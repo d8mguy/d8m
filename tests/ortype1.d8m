@@ -1,0 +1,12 @@
+// testing an ortype case
+import "strings"
+val Term: type = extend tuple(kind: string, arg: ortype(terms: list(Term), strg: string)) where {
+    // Note a subtlety: this is recursive so the rettype must be explicit
+    method stringify = \() -> string {
+        val args = (tag(arg) == :strg ? arg : strings.join(arg.{stringify(this)}, ";"))
+        "[#{kind}: #{args}]"
+    }
+}
+val t1 = [Term: "aaa", "bbb"]
+val t2 = [Term: "ccc", [[Term: "ddd", "eee"], t1]]
+println(t1, t2)

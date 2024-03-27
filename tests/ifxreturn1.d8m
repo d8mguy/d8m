@@ -1,0 +1,14 @@
+// catch an ITE bug
+import "strings"
+import go "math/rand"
+val foo = \imp() {
+    val randx = rand.New(rand.NewSource(1))
+    val s1 = randx.Intn(100) > 50 ? "ekrj iou" : "3498 k xe"
+    val s2 = randx.Intn(100) > 50 ? "';wrkj lkjd f'" : "Eiu erp er"
+    if(s1.count > s2.count) {
+        return strings.split(s1, " ")
+    } else {
+        return strings.split(s2, " ")
+    }
+}
+foo()

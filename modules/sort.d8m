@@ -1,0 +1,305 @@
+// Sort provides sorting of arbitrary types, both generically and by instantiation.
+// The generic sort works by arranging to call the go sort package. Thus, standard calls to `modsort` and `sort`
+// instantiate a sort algorithm for the particular element type of the list. This code is lifted very directly
+// from the go package code except that type specific methods are used instead of generic ones. Instantiated sorting
+// is quite a bit faster than generic; you can find details in the performance data section.
+//
+// The advantage of generic sorting is that when sorting small lists, the asymptotic speedup doesn't matter,
+// and each distinct instantiation of the full sorting algorithm results in a non-trivial amount of code,
+// so significant bloat is possible if you're sorting small lists of many different element types.
+// To get generic sorting, you apply a special type generator, called `GSLT` ("generically sortable list type"),
+// that creates list types augmented with the methods required by the go sort package. The sort module defines
+// and enables a rewrite rule that changes calls to `modsort` on list types created by `GSLT` into calls to `Sort`
+// in the go package. (Note that `sort.Sort` sorts its argument in place, just like `modsort`.)
+
+export modsort, sort, quickSort, insertionSort, heapSort, maxDepth, inOrder, GSLT
+
+// 2*ceiling(lg(n+1)), used to decide when to switch between heapsort and quicksort.
+val maxDepth = \imp(n: integer) {
+	var depth: integer = 0, i: integer = n
+	while(i > 0) { depth += 1; i /= 2 }
+	depth * 2
+}
+
+// First, define the panoply of sorting ftns on (lists of) ordered entities
+given(OT::ordered) {
+	// InsertionSort implements the insertion sort algorithm on `lst[first...last]`. It's exported
+	// in case you want to use it for something but is mainly used by quickSort.
+	val insertionSort = \mod(coll: list(OT), first, last: integer) {
+		val firstp1 = first+1
+		each(i^(firstp1...last), j^reverse(firstp1..i)) if(coll[j] < coll[j-1]) coll.swap(j, j-1) else break
+	}
+	val siftDown = \mod(coll: list(OT), lo, hi, first: integer) {
+		var root = lo
+		loop {
+			var child = 2*root + 1
+			if(child >= hi) break
+			if(child+1 < hi && coll[first+child] < coll[first+child+1]) child += 1
+			unless(coll[first+root] < coll[first+child]) return
+			coll.swap(first+root, first+child)
+			root = child
+		}
+	}
+	
+	// HeapSort implements the heap sort algorithm on `lst[first...last]`. It's exported in case you want to use
+	// it for something but is mainly used by quickSort.
+	val heapSort = \mod(coll: list(OT), first, last: integer) {
+		val len = last - first
+		each(i^reverse(0..(len-1)/2)) siftDown(coll, i, len, first)
+		each(i^reverse(0..(len-1))) { coll.swap(first, first+i); siftDown(coll, 0, i, first) }
+	}
+	
+	// sort the elts at m1, m0, and m2
+	val medianOf3 = \mod(coll: list(OT), m1, m0, m2: integer) {
+		if(coll[m1] < coll[m0]) { coll.swap(m1, m0) }
+		if(coll[m2] < coll[m1]) { coll.swap(m2, m1);  if(coll[m1] < coll[m0]) coll.swap(m1, m0) }
+	}
+	
+	val doPivot = \mod(coll: list(OT), lo, hi: integer) {
+		var m = (lo+hi)/2
+		if(hi - lo > 40) {
+			var s = (hi - lo)/8
+			medianOf3(coll, lo, lo+s, lo+2*s)
+			medianOf3(coll, m, m-s, m+s)
+			medianOf3(coll, hi-1, hi-1-s, hi-1-2*s)
+		}
+		medianOf3(coll, lo, m, hi-1)
+		var pivot = lo, a = lo+1, c = hi-1
+		while(a < c && coll[a] < coll[pivot]) a += 1
+		var b = a
+		loop {
+			while(b < c && !(coll[pivot] < coll[b])) b += 1
+			while(b < c && coll[pivot] < coll[c-1]) c -= 1
+			if(b >= c) break
+			coll.swap(b, c-1)
+			b += 1
+			c -= 1
+		}		
+		var protect = hi - c < 5
+		if(!protect && hi-c < (hi-lo)/4) {
+			var dups = 0
+			if(coll[hi-1] <= coll[pivot]) { coll.swap(c, hi-1); c += 1; dups += 1 }
+			if(coll[pivot] <= coll[b-1]) { b -= 1; dups += 1 }
+			if(coll[pivot] <= coll[m]) { coll.swap(m, b-1); b -= 1; dups += 1 }
+			protect = dups > 1
+		}
+		if(protect) {
+			loop {
+				while(a < b && !(coll[b-1] < coll[pivot])) b -= 1
+				while(a < b && coll[a] < coll[pivot]) a += 1
+				if(a >= b) break
+				coll.swap(a, b-1)
+				a += 1
+				b -= 1
+			}
+		}
+		coll.swap(pivot, b-1)
+		[mlo~b-1, mhi~c]
+	}
+	
+	// QuickSort sorts `lst[first...last]`, switching between heapSort, insertionSort, and quickSort algorithms
+	// based on the size of the sorting interval defined by `last - first`.
+	val quickSort = \mod(coll: list(OT), first0, last0, mxdepth: integer) -> nothing {
+		var mxd = mxdepth
+		var first = first0, last = last0
+		while(last - first > 12) {
+			if(mxd == 0) { heapSort(coll, first, last); return }
+			mxd -= 1
+			val tmp = doPivot(coll, first, last)
+			if(tmp.mlo - first < last - tmp.mhi) { quickSort(coll, first, tmp.mlo, mxd); first = tmp.mhi }
+			else { quickSort(coll, tmp.mhi, last, mxd); last = tmp.mlo }
+		}
+		if(last - first > 1) {		// interval size in range 2..12
+			var i = first + 6
+			while(i < last) { if(coll[i] < coll[i-6]) coll.swap(i, i-6); i += 1 }
+			insertionSort(coll, first, last)
+		}
+	}
+	
+	// Modsort is the main entry point for sorting. This version is for lists of ordered elements. Modsort simply calls quickSort.
+	val modsort = \mod(coll: list(OT)) -> list(OT) {
+		quickSort(coll, 0, coll.count, maxDepth(coll.count))
+		coll
+	}
+	// Sort provides a "pure" version of modsort by making a shallow copy of its argument, calling modsort on it, and returning it.
+	val sort = \imp(coll: list(OT)) {
+		var ret = copy(coll)
+		modsort(ret) 
+	}
+}
+
+// Second, define the same sorting ftns on (lists of) general entities, adding a comparison ftn to the args.
+given(T::entity) {
+	val insertionSort = \mod(coll: list(T), fn:\(T,T)->boolean, first, last: integer) {
+		val firstp1 = first+1
+		each(i^(firstp1...last), j^(firstp1..i).reverse) if(fn(coll[j], coll[j-1])) coll.swap(j, j-1) else break
+	}
+	val siftDown = \mod(coll: list(T), fn:\(T,T)->boolean, lo, hi, first: integer) {
+		var root = lo
+		loop {
+			var child = 2*root + 1
+			if(child >= hi) break
+			if(child+1 < hi && fn(coll[first+child], coll[first+child+1])) child += 1
+			unless(fn(coll[first+root], coll[first+child])) return
+			coll.swap(first+root, first+child)
+			root = child
+		}
+	}
+	val heapSort = \mod(coll: list(T), fn:\(T,T)->boolean, first, last: integer) {
+		val len = last - first
+		each(i^reverse(0..(len-1)/2)) siftDown(coll, fn, i, len, first)
+		each(i^reverse(0..(len-1))) { coll.swap(first, first+i); siftDown(coll, fn, 0, i, first) }
+	}
+	val medianOf3 = \mod(coll: list(T), fn:\(T,T)->boolean, m1, m0, m2: integer) {
+		if(fn(coll[m1], coll[m0])) { coll.swap(m1, m0) }
+		if(fn(coll[m2], coll[m1])) { coll.swap(m2, m1);  if(fn(coll[m1], coll[m0])) coll.swap(m1, m0) }
+	}
+	val doPivot = \mod(coll: list(T), fn:\(T,T)->boolean, lo, hi: integer) {
+		var m = (lo+hi)/2
+		if(hi - lo > 40) {
+			var s = (hi - lo)/8
+			medianOf3(coll, fn, lo, lo+s, lo+2*s)
+			medianOf3(coll, fn, m, m-s, m+s)
+			medianOf3(coll, fn, hi-1, hi-1-s, hi-1-2*s)
+		}
+		medianOf3(coll, fn, lo, m, hi-1)
+		var pivot = lo, a = lo+1, c = hi-1
+		while(a < c && fn(coll[a], coll[pivot])) a += 1
+		var b = a
+		loop {
+			while(b < c && !fn(coll[pivot], coll[b])) b += 1
+			while(b < c && fn(coll[pivot], coll[c-1])) c -= 1
+			if(b >= c) break
+			coll.swap(b, c-1)
+			b += 1
+			c -= 1
+		}		
+		var protect = hi - c < 5
+		if(!protect && hi-c < (hi-lo)/4) {
+			var dups = 0
+			if(!fn(coll[pivot], coll[hi-1])) { coll.swap(c, hi-1); c += 1; dups += 1 } 
+			if(!fn(coll[b-1], coll[pivot])) { b -= 1; dups += 1 } 
+			if(!fn(coll[m], coll[pivot])) { coll.swap(m, b-1); b -= 1; dups += 1 }
+			protect = dups > 1
+		}
+		if(protect) {
+			loop {
+				while(a < b && !fn(coll[b-1], coll[pivot])) b -= 1
+				while(a < b && fn(coll[a], coll[pivot])) a += 1
+				if(a >= b) break
+				coll.swap(a, b-1)
+				a += 1
+				b -= 1
+			}
+		}
+		coll.swap(pivot, b-1)
+		[mlo~b-1, mhi~c]
+	}
+	
+	val quickSort = \mod(coll: list(T), fn:\(T,T)->boolean, first0, last0, mxdepth: integer) -> nothing {
+		var mxd = mxdepth
+		var first = first0, last = last0
+		while(last - first > 12) {
+			if(mxd == 0) { heapSort(coll, fn, first, last); return }
+			mxd -= 1
+			val tmp = doPivot(coll, fn, first, last)
+			if(tmp.mlo - first < last - tmp.mhi) { quickSort(coll, fn, first, tmp.mlo, mxd); first = tmp.mhi }
+			else { quickSort(coll, fn, tmp.mhi, last, mxd); last = tmp.mlo }
+		}
+		if(last - first > 1) {		// interval size in range 2..12
+			var i = first + 6
+			while(i < last) { if(fn(coll[i], coll[i-6])) coll.swap(i, i-6); i += 1 }
+			insertionSort(coll, fn, first, last)
+		}
+	}
+	
+	// Modsort is the main entry point for sorting. This version is for arbitrary elements, plus a
+	// function to compare the elements. Modsort simply calls quickSort.
+	val modsort = \mod(coll: list(T), fn:\(T,T)->boolean) {
+		quickSort(coll, fn, 0, coll.count, maxDepth(coll.count))
+		coll
+	}
+	val sort = \imp(coll: list(T), fn:\(T,T)->boolean) {
+		var ret = copy(coll)
+		modsort(ret, fn) 
+	}
+	
+}
+
+// For sorting general entities with an order extraction ftn, build in the extract and sort optimzn,
+// plus the sort in place one once we have permuted indices.
+given(T::entity, OT::ordered) {
+	val modsort = \mod(lst: list(T), extract:\(T)->OT) {
+		val XT = tuple(xtd: OT, inx: integer)
+		var pairs = modsort(lst.{ [XT: extract(this), index] }, \(x,y: XT) { x.xtd < y.xtd })
+		// now we have the permutation in pairs.{inx}; use perm->cycles algo to move in place
+		// find cycle starting at 0, moving as we go, and marking moved indices by setting pairs.inx to -1.
+		var topinx = 0, curinx = 0
+		loop {
+            curinx = topinx
+            val tmpval = lst[curinx]
+		    loop {
+		        val nxinx = pairs[curinx].inx
+		        pairs[curinx].inx = -1          // mark as seen
+		        if(nxinx == curinx) break        // this only happens with 1-cycles, which require no mvmt
+		        if(nxinx == topinx) {
+                    lst[curinx] = tmpval
+		            break
+		        }
+		        lst[curinx] = lst[nxinx]
+		        curinx = nxinx
+		    }
+		    // we've completed a cycle; check if there's another
+		    while(topinx < lst.count && pairs[topinx].inx < 0) topinx += 1
+		    if(topinx == lst.count) break
+		}
+    	lst
+	}
+	val sort = \imp(lst: list(T), extract:\(T)->OT) {
+		var ret = copy(lst)
+		modsort(ret, extract)
+	}
+}
+
+// answer whether a list(T) is ordered according to fn. 
+
+given(OT::ordered) {
+    // InOrder returns whether the elements of lst are in order (according to `OT`'s ordering).
+    val inOrder = \(lst: list(OT)) {
+        if(lst.count > 1) {
+            each(inx^1...lst.count) unless(lst[inx-1] <= lst[inx]) return false
+        }
+        true
+    }
+}
+
+// GSLT returns a `list(OT)` augmented with methods needed by go's sort package for sorting types generically.
+// The declaration provides effective assertions that ensure correct code generation for such calls.
+// The sort module also defines and activates a rewrite rule that rewrites a call to `modsort` on any GSLT into a call to sort.Sort (in the go package).
+// Therefore, you can get a list sorted generically by creating it as a GSLT, then calling modsort on it.
+// Since it's otherwise a standard list, you can use it in all the usual ways outside of sorting.
+val GSLT = \typegen(T::ordered) {
+	extend list(T) where {
+		method Len = \() { count(self) }
+		method Swap = \mod(i, j: integer) { self.swap(i, j) }
+		method Less = \(i, j: integer) { self[i] < self[j] }
+		assert Gomethod(Len)
+		assert Gomethod(Swap)
+		assert Gomethod(Less)
+	}
+}
+val GncSortable = typepred(T::list,
+	Len:\(T)->integer,
+	Swap:\mod(T, integer, integer)->nothing,
+	Less:\(T,integer,integer)->boolean)
+given(GST::GncSortable) {
+	val GncSortRW = \xprftn() {
+		val srtble: GST
+		val sortstmt: xprterm = matching("modsort(srtble)", false, true)
+		matchquery(sortstmt)
+		sortstmt.subst([sortstmt], [mkterm(:funcall, pkgSymbol("sort", "Sort"), [srtble])])
+	}
+}
+rewrite(GncSortRW)
+
+

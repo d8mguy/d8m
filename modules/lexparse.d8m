@@ -1,0 +1,1511 @@
+// A parameterized parser in d8m, for mapping strings to Terms with some flexibility. See the markdown document
+// for details. A quick summary: provide a language description and get an "instant parser" for that language. There
+// are restrictions: we're focused on programming languages, and tokenization in particular is influenced by that.
+
+import "bytes"
+import "regexp" as rxp
+import "term" melted
+import "dict" melted
+import "olist" melted
+import "strings"
+
+export Term, parseCxt, parseState, tknclassSpec, rawProdn, lexerT, langDefn, parseExpr, parseStmt, parseStmts, scanStmt, d8mDefn, fixD8mLabels
+
+// We import Term and it's what the parser produces in std (non-scan) mode. Here, leaf nodes, are defined by token classes.
+// Normally, the list elts are the non-fixed elts of the rule that matched, ie token classes and prodns. The asString and
+// asTerms methods help pick apart Terms.
+
+val ruleType = label(:stmt, :expr, :general)
+
+// defines the form that rules are presented in a gmr defn.
+val rawProdn = tuple(name: string, rtyp: ruleType, rule: string)
+
+// My term for a partly evaluated production rule: first 2 indices identify the rule; ofs tells where we are in it.
+// Note: must define $<= explicitly because compiler can't infer it in this case.
+val dottedPR = extend tuple(nt, pr, ofs: integer) where {
+    method $< = \(other: dottedPR) { nt < other.nt || (nt == other.nt && (pr < other.pr || (pr == other.pr && ofs < other.ofs))) }
+    method $<= = \(other: dottedPR) { nt < other.nt || (nt == other.nt && (pr < other.pr || (pr == other.pr && ofs <= other.ofs))) }
+}
+
+// Nonterm holds info for non-terminals. The binx slot is initialized to -1 and used in 2 different ways.
+// While parsing, it represents the index in langDefn.bblocks of a bblock that tells how to parse this NT
+// "as a subroutine". This can happen when an NT item occurs in a :must or :optional instrux. It's not done
+// in a standard table-driven parser; the way I think about this is that a standard table-driven parser "inlines"
+// every NT, whereas lexparse doesn't.
+// Thus, while all bblocks tell how to parse based on a set of dprs, the dpr sets arise in two ways: (1) from
+// tokens repg the next token for some NT or set of NTs; (2) from an NT called "as a subroutine". The token
+// driven bblocks are generated first -- for stmts and exprs. While doing this, we note which NTs are called as
+// subroutines. In a post-pass we generate bblocks for those. We incr nt.binx each time nt is "called" in any
+// token driven bblock, so each nt.binx != -1 after that phase is used and needs a bblock.
+val Nonterm = extend tuple(name: string, rtyp: ruleType, binx: integer) where {
+    // todo: as of 2022/07/20 emptyOk is in but not tested and almost certainly doesn't work robustly
+    attribute emptyOk: boolean
+    attribute FirstTkns: olist0(string)
+    attribute rules: list(list(string))
+    attribute postExpr:boolean               // needed to adjust termstack offset for prodns of the form "expr NT"
+    attribute derived: list(integer)         // normally empty, set for "synthesized" nonterminals
+
+    method synthetic = \() { derived.count > 0 }
+    method initDprs = \(selfinx: integer) { rules.{ [dottedPR: selfinx, index, 0] } }
+}
+val olistNTs = olist(Nonterm, string, \(p: Nonterm) { p.name })
+
+
+// Here we build up the defns for the list of parsing instructions that are packaged in a "bblock".
+// Most are straightforward: :must expects a terminal/tknclass or calls a NT "as a subroutine"; :optional
+// gets a list of items, peeks at nxtoken, and either pursues the list or not; :visit branches
+// to new bblocks based on tokens seen.
+// The :start, :reduce, and :suppress opcodes tell the parser how to create terms: :start gets NT name (which is ignored),
+// :reduce gets the same (which is used), and :suppress bumps a state counter that causes one (dynamic) start+reduce pair
+// to be ignored. We need :suppress for starred NTs that call the "subroutine" bblock that has start+reduce built in.
+// The :starttkn opcode is start for the special case where we're going to push fixed tokens because that's all that the
+// rules contain.
+val actions = label(:must, :optional, :visit, :start, :starttkn, :reduce, :suppress)
+val vpair = extend tuple(tkn: string, stateinx: integer) where {
+    method stringify = \() { "V[#{tkn}: #{stateinx}]"}
+}
+val actionItem = extend tuple(action: actions, v: ortype(m: string, inx: integer, v: list(vpair))) where {
+    method asString = \() { always(x~self.v, tag(x) == :m) }
+    method asIndex = \() { always(x~self.v, tag(x) == :inx) }
+    method asVisits = \() { always(x~self.v, tag(x) == :v) }
+    method stringify = \() {
+        val innards = case {
+            action == :must || action == :start || action == :starttkn || action == :reduce || action == :suppress => self.asString
+            action == :optional => stringify(self.asIndex)
+            action == :visit => strings.join(self.asVisits.{stringify(this)}, ",")
+        }
+        "[#{action}:#{innards}]"
+    }
+}
+
+
+// A bblockT tells (1) a linear list of parsing actions and (2) the Nonterm this bblock completes, or "".
+// If present, a visit action will always be the last.
+// One or more prodn rules (PRs) get compiled into one or more bblocks. Many bblocks are called/interpreted
+// from one context, but when following paths with multiple NTs there can be sharing. There are two kinds of
+// contexts for calling a bblock: (1) because a token (or tokenclass) was
+// seen; (2) because a PR calls for a specific Nonterm to be parsed. Both of these calls are triggered, in some
+// sense, by a string. In case 1, it's the name of the tokenclass or the specific token that must be seen.
+// For example, the string might be left paren, which in std PL grammar would trigger one bblock at the start
+// of an expr for the parenthesized expression rule and a different bblock following an expr for the funcall rule.
+// These bblock references would be found in exprFirst and exprFollow respectively.
+// On the other hand, consider the body of the funcall rule: "expr ( exprlist )". Once the left paren is seen,
+// we go to the bblock that codes for the rest of the funcall rule. That bblock starts with exprlist.
+//
+// Added late: dprs slot is to detect shared synthd NTs
+val bblockT = extend tuple(instrux: list(actionItem), NTname: string, dprs: list(dottedPR)) where {
+    method lithook = \mod(ix: list(actionItem), nm: string) { instrux = ix; NTname = nm; dprs = [] }
+    method lithook = \mod(nm: string) { instrux = []; NTname = nm; dprs = [] }
+    method stringify = \() {
+        val istrgs = strings.join(instrux.{ stringify(this) }, `;`)
+        "[BB:#{NTname}/#{dprs.count}:#{istrgs}]"
+    }
+}
+
+// oprInfo is mainly intended for expression operators but since there's an operator stack in the parser
+// I use it to hold info for parsing non-operators as well. The start instruction pushes a "dynamic" oprInfo
+// whose argcount is actually the current termstack depth, then the "reduce" instruction pops the oprInfo
+// and uses that info to figure out how many args to put in the Term.
+//
+val oprInfo = tuple(opr: string,     // this is the token value
+    prec, argcount: integer,         // prec will be # levels in raw opr table, argcount 1 or 2
+    special: integer,                // -1=normal, else index of a bblock
+    firstTokens: list(string),       // used for lookahead when binop and special at same time
+    termtag: string)                 // termtag is the name in Term
+val olistOI = olist(oprInfo, string, \(x: oprInfo) { x.opr })
+
+// tknclassSpec defines token classes
+val tknclassSpec = tuple(tknclass: string, regexp: string)
+val tknclassPattern = tuple(tknclass: string, regexp: rxp.regexpT)
+val tclassBI = extend tuple(disabled: boolean, rx: nilPossible(rxp.regexpT)) where {
+    method lithook = \mod(rxstrg: string) {
+        disabled = rxstrg == ""
+        unless(disabled) rx = [rxp.regexpT: rxstrg]
+    }
+}
+val tclassRegexpT = tuple(ident, int, flt, strg: tclassBI)
+
+val deStar = \(s: string) { val tmp = s.count; tmp > 0 && s[tmp-1] == '*' ? s[0...tmp-1] : s }
+
+// Note: this isn't really compatible with changing the ident tokenclass.
+val identForm = \(s: string) { s != "" && bytes.alpha(s[0]) && all(cvt(s[1...s.count], list(byte)).{bytes.alphanum(this)}) }
+
+// Record a set of NTs that need to be solved together, and link them into a stack. The nts slot is NT names.
+val mixedNT: type = tuple(nts: list(string), next: nilPossible(mixedNT))
+
+val lexerT = extend tuple(brackets, comments: list(string), seps: list(byte)) where {
+    attribute error: string
+    attribute bracketStarts: list(byte)  // brackets can be multichar; collect first chars here
+    attribute hasMulticharBrkt: boolean
+    attribute fixedTknclassPatterns: tclassRegexpT    // holds patterns (if present) for [ident, int, flt, strg]
+    attribute userTknclassPatterns: list(tknclassPattern)
+    attribute tknclassStrings: list(string)
+
+    // Method lithook checks the arguments and if any required properties fail, it sets error and returns with a self
+    // that may not be fully initialized. So it's important to check after creating a lexerT that it
+    method lithook = \mod(brkts, cmnts, sepsarg: list(string), tclassPtns: list(tknclassSpec)) {
+        brackets = brkts
+        comments = cmnts
+        if(brackets.count % 2 != 0) { error = "odd bracket count can't be right"; return self }
+        if(comments.count % 2 != 0) { error = "odd comment count can't be right"; return self }
+        if(any(brkts.{this == ""})) { error = "empty bracket string"; return self }
+        if(any(comments.{this == ""})) { error = "empty comment string"; return self }
+        bracketStarts = brkts.{this[0]}
+        if(bracketStarts != bracketStarts.uniq) { error = "repeated bracket!"; return self }
+        hasMulticharBrkt = any(brkts.{this.count != 1})
+        if(any(sepsarg.{this.count != 1})) { error = "separators must be single character strings"; return self }
+        seps = sepsarg.{this[0]}
+        tknclassStrings = ["ident", "int", "flt", "strg"]
+        each(tcp^tclassPtns) {
+            if(tcp.tknclass == "ident") {
+                fixedTknclassPatterns.ident = [tclassBI: tcp.regexp]
+                if(fixedTknclassPatterns.ident.disabled) tknclassStrings.removeElt("ident")
+            } else if(tcp.tknclass == "int") {
+                fixedTknclassPatterns.int = [tclassBI: tcp.regexp]
+                if(fixedTknclassPatterns.int.disabled) tknclassStrings.removeElt("int")
+            } else if(tcp.tknclass == "flt") {
+                fixedTknclassPatterns.flt = [tclassBI: tcp.regexp]
+                if(fixedTknclassPatterns.flt.disabled) tknclassStrings.removeElt("flt")
+            } else if(tcp.tknclass == "strg") {
+                fixedTknclassPatterns.strg = [tclassBI: tcp.regexp]
+                if(fixedTknclassPatterns.strg.disabled) tknclassStrings.removeElt("strg")
+            } else {
+                userTknclassPatterns.pushb([tknclassPattern: tcp.tknclass, [rxp.regexpT: tcp.regexp]])
+                tknclassStrings.pushb(tcp.tknclass)
+            }
+        }
+        return self
+    }
+}
+
+val langDefn = extend tuple(lexer: lexerT, newlineTermination: boolean) where {
+    attribute error: string              // set != "" when the lang defn is in error
+    attribute allNonterms: olistNTs          // Nonterms ordered on name
+    // next two used in parseExpr to process operators and expr PRs; exprFirst have initial terminal tokens (eg parenth
+    attribute exprFirst, exprFollow: olistOI
+    // All bblocks here, addressed by indices in oprInfo, stmtFirst dict, and internal to bblocks.
+    // Originally, bblockT did not have the dprs slot, which is used to detect identical nodes. Searching for
+    // duplicates would be faster if I ordered bblocks on this slot but that would break numerous assumptions about
+    // the order of bblock indices.
+    attribute bblocks: list(bblockT)
+    attribute stmtFirst: dict(string, integer)   // dict from names of :stmt NTs to bblock indices
+    attribute stmtPostExpr: list(tuple(tkn: string, bbinx: integer))    // tokens and bblocks for stmts starting with expr
+    attribute maxprec: integer
+
+    // hack alert: I use Nonterm.binx slot in construct (indirectly via itemUsed) to record that an item needs a
+    // subroutine bblock generated. This needs to be suppressed when we are generating subroutine bblocks!
+    attribute generatingSubrs: boolean
+
+    // more hackery: I need construct to fill in First set of oprInfo occasionally for lookahead, and because of
+    // restrictions on modding funargs, I can't do this by adding a funarg to construct. So I set this slot when needed.
+    attribute opinfo4Lookahead: nilPossible(oprInfo)
+
+    // also a hack: when making a bblock for optional we don't want to add a reduce ix at the end; this counter helps
+    attribute optionLevel: integer
+
+    // Note that the ofs slot of a dottedPR dpr is dpr.count to indicate we've finished the rule. Use "" to indicate this.
+    // Otherwise, indexing would suffice.
+    private method DPR2Tkn = \(dpr: dottedPR) {
+        val tmp = allNonterms[dpr.nt].rules[dpr.pr]
+        dpr.ofs == tmp.count ? "" : tmp[dpr.ofs]
+    }
+    private method DPR2Pr = \(dpr: dottedPR) { allNonterms[dpr.nt].rules[dpr.pr] }
+
+    private method prDPR = \imp(dpr: dottedPR) {
+        val nt = allNonterms[dpr.nt]
+        var rule = copy(nt.rules[dpr.pr])
+        strings.join(rule.insert(dpr.ofs, "*"), " ")
+    }
+
+    private method prBBlock = \imp(bbinx: integer) {
+        val bblock = bblocks[bbinx]
+        "#{bbinx}/#{bblock.NTname}: " + strings.join(bblock.instrux.{stringify(this)}, ";")
+    }
+
+    private method isTerminal = \(strg: string) {
+        strg.count > 0 && strg[strg.count - 1] != '*' && strg != "expr" && !allNonterms.keyIn(strg)
+    }
+
+    // Given a non-empty string in a rule, return it possibly stripped of * if it's a non-terminal, else ""
+    private method nonTerminalString = \(strg: string) {
+        val sstrg = (strg[strg.count - 1] == '*' ? strg[0...strg.count - 1] : strg)
+        if(allNonterms.keyIn(sstrg)) sstrg else ""
+    }
+
+    // AllocBBlock gets a dprs set, creates a bblockT for it, and returns its index, optionally
+    // pushing a start opcode
+    private method allocBBlock = \mod(dprs: list(dottedPR), doStart: boolean) {
+        val ret = bblocks.count
+        var bblk = [bblockT: allNonterms[dprs[0].nt].name]
+        if(doStart) bblk.instrux.pushb([:start, bblk.NTname])
+        bblocks.pushb(bblk)
+        ret
+    }
+
+    // Given the index of a bblock for an optional, return its First set. This
+    // is a bit tricky with nested optionals, which can happen. Then we combine
+    // the firsts of the optional and whatever follows it, which is conveniently done
+    // by making both firstTokens and its local helper fn recursive.
+    private method firstTokens = \imp(bbinx: integer) -> list(string) {
+        val ix = bblocks[bbinx].instrux
+        var inx0 = (ix[0].action == :start || ix[0].action == :starttkn) ? 1 : 0
+        var aitem = ix[inx0]
+        var rslt: list(string) = []
+        val tk1Cases = \imp(actn: actionItem) -> nothing {
+            if(actn.action == :must) {
+                val v = deStar(actn.asString())
+                val nt = allNonterms.get(v)
+                if(nt == nil) rslt.pushb(v)
+                else rslt.append(nt.FirstTkns.{this})
+            } else if(actn.action == :optional) {
+                rslt.append(self.firstTokens(actn.asIndex()))
+                inx0 += 1
+                if(inx0 < ix.count) tk1Cases(ix[inx0])
+            } else {
+                val vlst = actn.asVisits()
+                each(vi^vlst) {
+                    val nt = allNonterms.get(vi.tkn)
+                    if(nt == nil) rslt.pushb(vi.tkn)
+                    else rslt.append(nt.FirstTkns.{this})
+                }
+            }
+        }
+        tk1Cases(aitem)
+        rslt.uniq
+    }
+
+    // Occasionally, we need to synthesize a NT -- see calling point for an explanation.
+    // Here, we get the rules for the new NT and params for its derived slot.
+    private method allocSynthetic = \mod(synthdRules: list(list(string)), derive: list(integer)) {
+        // Tricky bit: allNonterms is ordered on name. Name of synthd NTs doesn't matter so we
+        // arrange for it to go at end so as not to screw up other indices.
+        each(nt^allNonterms) if(nt.synthetic && nt.binx >= 0 && nt.rules == synthdRules) {
+            return nt
+        }
+        val synthdInx = allNonterms.count
+        var lastname = cvt(allNonterms[synthdInx - 1].name, list(byte))
+        val lastletter = lastname[lastname.count - 1]
+        if('0' <= lastletter && lastletter < '9') lastname[lastname.count - 1] += 1
+        else lastname.pushb('0')
+        val synthd = [Nonterm: cvt(lastname, string), :general, self.bblocks.count, false, [], synthdRules, false, derive]
+        // println("splitting #{nt.name} -> #{synthd.name}:", synthdRules)
+        allNonterms.insert(synthd)
+        allocBBlock(synthd.initDprs(synthdInx), false)
+        synthd
+    }
+
+    // Construct a set of linked bblocks telling how to parse the dotted prodn rules in dprs0.
+    // This fn is recursive in certain cases. 
+    private method construct = \mod(bbinx: integer, dprs0: list(dottedPR)) -> nothing {
+        // We've encountered itm and put it into a must or optional instrux. So if it's an NT, it must be "callable as
+        // a subroutine". This method uses Nonterm.binx to record this requirement (which is carried out in a post-pass).
+        // Note the horrible hack of generatingSubrs; don't use this in that phase, it'll screw things up.
+        val itemUsed = \imp(itm: string) {
+            unless(generatingSubrs) {
+                val nts = nonTerminalString(itm)
+                if(nts != "") {
+                    val ntInx = allNonterms.index(nts)
+                    var itemNT = allNonterms[ntInx]
+                    itemNT.binx += 1
+                }
+            }
+        }
+
+        // Now traverse the dottedPRs and build up bblock
+        var bblock = bblocks[bbinx]
+        var dprs = dprs0.{copy(this)}      // the local copy is moddable
+        if(bblock.instrux.count == 1 && bblock.instrux[0].action == :start) {
+            if(all(dprs.{ val pr = DPR2Pr(this); pr.count == 1 && isTerminal(pr[0])})) bblock.instrux[0].action = :starttkn
+        }
+//        println("construct #{bbinx}: #{dprs.count} dprs, " + strings.join(dprs.{"#{index}=#{prDPR(this)}"}, ";"))
+        var anyCompleted = any(dprs0.{ allNonterms[this.nt].emptyOk })
+        loop {
+            // allNTs are the NTs we're working in this set of dprs
+            val allNTs = dprs.{ allNonterms[this.nt].name }.uniq
+            val nxtItemSet = dprs.[ this.ofs < DPR2Pr(this).count ].{ DPR2Tkn(this) }.uniq
+            // NTItems is the destarred NTs of nxtItemSet. Note that expr & stmt are stripped.
+            val NTItems = nxtItemSet.{ nonTerminalString(this) }.[ this != "" ]
+            var changed = false
+            if(opinfo4Lookahead != nil) {
+                if(NTItems.count > 0) { error = "can't (currently) mix lookahead with nonterminals"; return }
+                opinfo4Lookahead.firstTokens = nxtItemSet
+                opinfo4Lookahead = nil
+            }
+            if(anyCompleted && allNTs.count == 1) {
+                // make an optional that finishes the dpr set in its sub-bblock
+                val binx = allocBBlock(dprs, false)
+                bblock.instrux.pushb([:optional, binx])
+                self.optionLevel += 1
+                self.construct(binx, dprs)
+                self.optionLevel -= 1
+                each(dpr^dprs) { val pr = DPR2Pr(dpr); dpr.ofs = pr.count }
+                changed = true
+            } else if(dprs.count == 1) {        // single active rule: everything is a must
+                val pr = DPR2Pr(dprs[0])
+                val items = pr[dprs[0].ofs...pr.count]
+                each(item^items) { bblock.instrux.pushb([:must, item]); itemUsed(item) }
+                dprs[0].ofs = pr.count
+                changed = true
+            } else if(nxtItemSet.count == 1 && allNTs.count == 1) {     // single follow item: push a must
+                bblock.instrux.pushb([:must, nxtItemSet[0]])
+                itemUsed(nxtItemSet[0])
+                each(dpr^dprs) dpr.ofs += 1
+                changed = true
+            } else if(nxtItemSet.count == 2 && NTItems.count < 2 && allNTs.count == 1) {
+                // Given 2 items, not both NTs and not on behalf of distinct NTs, look for "optional in the middle"
+                // Make explicit the partition of dprs for each item, then look for offsets in both that indicate optionality
+                var itm0Inx, itm1Inx: list(integer)     // indices for 1st & 2nd item
+                each(dpr^dprs, inx) if(DPR2Tkn(dpr) == nxtItemSet[0]) itm0Inx.pushb(inx) else itm1Inx.pushb(inx)
+                // Across tells if the dprs at indices all match want when incr'd by offset
+                val across = \(indices: list(integer), offset: integer, want: string) {
+                    all(indices.{dprs[this]}.{ val pr = DPR2Pr(this), inx = this.ofs+offset; inx < pr.count && pr[inx] == want })
+                }
+                val max0 = max(itm0Inx.{DPR2Pr(dprs[this]).count - dprs[this].ofs}, 0)
+                val max1 = max(itm1Inx.{DPR2Pr(dprs[this]).count - dprs[this].ofs}, 0)
+                var shift0 = 0, shift1 = 0
+                each(shift^reverse(1...max0)) if(across(itm0Inx, shift, nxtItemSet[1])) { shift0 = shift; break }
+                each(shift^reverse(1...max1)) if(across(itm1Inx, shift, nxtItemSet[0])) { shift1 = shift; break }
+                if(shift0 > 0 || shift1 > 0) {  // at most 1 of shift0, shift1 != 0
+                    // Abstract a fn to handle either direction
+                    val synthOpt = \imp(indices: list(integer), shift: integer) {
+                        val optitems = indices.{ val d = dprs[this], pr = DPR2Pr(d); pr[d.ofs...d.ofs+shift] }
+                        if(optitems.uniq.count == 1) {   // if all optional parts same, hand roll must seq called by optional
+                            // note: the dprs to this bblock are fake, only to be able to extract a NT name
+                            val bbinx0 = allocBBlock([dprs[indices[0]]], false)
+                            var bblock0 = bblocks[bbinx0]
+                            each(oi^optitems[0]) bblock0.instrux.pushb([:must, oi])
+                            bblock.instrux.pushb([:optional, bbinx0])
+                            each(i^indices) dprs[i].ofs += shift
+                        } else {        // otherwise, synth a new NT and call that
+                            val ntinx = allNonterms.index(NTItems[0])
+                            val synthdNT = self.allocSynthetic(optitems, [dprs[indices[0]].nt, ntinx])
+                            var bblockSynthd = self.bblocks[synthdNT.binx]
+                            bblockSynthd.dprs = synthdNT.initDprs(allNonterms.index(synthdNT.name))
+                            if(bblockSynthd.instrux.count == 0) {
+                                self.optionLevel += 1
+                                self.construct(synthdNT.binx, bblockSynthd.dprs)
+                                self.optionLevel -= 1
+                            }
+                            bblock.instrux.pushb([:must, synthdNT.name])
+                            each(i^indices) { var d = dprs[i], pr = DPR2Pr(d); d.ofs = pr.count }
+                        }
+                    }
+                    if(shift0 > 0) synthOpt(itm0Inx, shift0)
+                    else synthOpt(itm1Inx, shift1)
+                    changed = true
+                }
+            }
+            // at this point, we've generated the :must and :optional cases, which set changed=true. So !changed
+            // means we have to split up into different bblocks via a :visit opcode.
+            // The details differ if nxtItemSet includes NTs or not. Also, there are a bunch of cases we bail on.
+            unless(changed) {
+                var vlist: list(vpair) = []
+                val tcsIndices = nxtItemSet.[this in lexer.tknclassStrings => index]
+                if(NTItems.count > 1 || ("expr" in nxtItemSet && tcsIndices.count > 0) || (anyCompleted && NTItems.count == 1)) {
+                    error = "can't handle this grammar (dprs=#{dprs})"
+                    return
+                }
+                var doVisit = true
+                if(NTItems.count == 1) {
+                    val ntinx = allNonterms.index(NTItems[0])
+                    val nt = allNonterms[ntinx]
+                    // If NT is a nonterminal and First(NT) overlaps with the terminal(s), inline it.
+                    // That is, create a new "synthetic" NT and construct with dprs involving it and the existing dpr set.
+                    // Building the new dpr set involves a cross-product. With this approach the construct call does everything.
+                    val keywordForm = \(s: string) { identForm(s) && nonTerminalString(s) == "" && s != "expr" && s != "stmt"}
+                    val dpr2Rule = \(d: dottedPR, incr: integer) { val pr = DPR2Pr(d); pr[d.ofs+incr...pr.count] }
+                    val ntKeywords = nt.FirstTkns.[ keywordForm(this) ]
+                    val exprInFirst = "expr" in nt.FirstTkns
+                    if(any(nxtItemSet.{this in nt.FirstTkns ||
+                        (exprInFirst && (this in lexer.tknclassStrings || exprFirst.keyIn(this)))})) {
+                        // Split the dprs by whether they start with NTItems[0]
+                        val dprSplit = dprs.split(\(x: dottedPR) { DPR2Tkn(x) == NTItems[0] })
+                        // Cross-product of the rules for NTItems[0] with post-NT part of pos splits
+                        // Pos is the NT we're inlining so don't include it but do for neg. Hence the incr arg.
+                        val newRules = concatPairs(nt.rules, dprSplit.pos.{ dpr2Rule(this, 1) })
+                        val allRules = dprSplit.neg.{ dpr2Rule(this, 0) }.append(newRules)
+                        // Synthesize a new NT from the synthdRules, call it in bblock, then arrange not to visit and
+                        // to ensure that we consider things to be done (since the new NT handles the rest of current dprs).
+                        val synthdNT = self.allocSynthetic(allRules, [dprs[0].nt, ntinx])
+                        var bblockSynthd = self.bblocks[synthdNT.binx]
+                        bblockSynthd.dprs = synthdNT.initDprs(allNonterms.index(synthdNT.name))
+                        self.optionLevel += 1
+                        if(bblockSynthd.instrux.count == 0) self.construct(synthdNT.binx, bblockSynthd.dprs)
+                        self.optionLevel -= 1
+                        bblock.instrux.pushb([:must, synthdNT.name])
+                        each(dpr^dprs) { val pr = DPR2Pr(dpr); dpr.ofs = pr.count }
+                        doVisit = false
+                    } else if("ident" in nxtItemSet && ntKeywords.count > 0) {
+                        // Here we need to visit the NT keywords before ident
+                        val ntdprs = dprs.[ DPR2Tkn(this) == NTItems[0] ]
+                        each(kw^ntKeywords) {
+                            vlist.pushb([vpair: kw, bblocks.count])
+                            bblocks.pushb([bblockT: allNonterms[ntdprs[0].nt].name])
+                            self.construct(bblocks.count - 1, ntdprs)
+                            if(error != "") return
+                        }
+                        each(nxtkn^nxtItemSet, inx) {       // this loop will include the ident
+                            if(deStar(nxtkn) in NTItems) continue
+                            vlist.pushb([vpair: nxtkn, bblocks.count])
+                            val ndprs = dprs.[ DPR2Tkn(this) == nxtkn ]
+                            bblocks.pushb([bblockT: allNonterms[ndprs[0].nt].name])
+                            self.construct(bblocks.count - 1, ndprs)
+                            if(error != "") return
+                        }
+                        // if we haven't covered all cases of the NT, make a general call
+                        if(ntKeywords.count < nt.FirstTkns.count) {
+                            vlist.pushb([vpair: NTItems[0], bblocks.count])
+                            bblocks.pushb([bblockT: NTItems[0]])
+                            self.construct(bblocks.count - 1, ntdprs)
+                        }
+                        each(dpr^dprs) { val pr = DPR2Pr(dpr); dpr.ofs = pr.count }
+                        bblock.instrux.pushb([:visit, vlist])
+                        doVisit = false
+                    }
+                }
+                // Visit can have else if anyCompleted or single NT item. Place others first.
+                if(doVisit) {
+                    var visitExpr = false       // arrange to put "expr" after more specific tokens
+                    each(nxtkn^nxtItemSet, inx) {
+                        if(deStar(nxtkn) in NTItems) continue
+                        if(nxtkn == "expr") { visitExpr = true; continue }
+                        val binx = bblocks.count
+                        vlist.pushb([vpair: nxtkn, binx])
+    //                    println("vlist: #{nxtkn}; #{bblocks.count}")
+                        val ndprs = dprs.[ DPR2Tkn(this) == nxtkn ]
+                        bblocks.pushb([bblockT: allNonterms[ndprs[0].nt].name])
+                        self.construct(binx, ndprs)
+                        if(error != "") return
+                    }
+                    if(visitExpr) {
+                        val binx = bblocks.count
+                        vlist.pushb([vpair: "expr", binx])
+                        val ndprs = dprs.[ DPR2Tkn(this) == "expr" ]
+                        bblocks.pushb([bblockT: allNonterms[ndprs[0].nt].name])
+                        self.construct(binx, ndprs)
+                    }
+                    if(anyCompleted) {
+                        // this means we need a branch that just succeeds. Since construct can't do that, do it by hand
+                        vlist.pushb([vpair: "", bblocks.count])
+                        var bbt = [bblockT: allNTs[0]]
+                        if(self.optionLevel == 0) bbt.instrux.pushb([:reduce, allNTs[0]])
+                        bblocks.pushb(bbt)
+                    } else if(NTItems.count == 1) {
+                        // Here, we're doing a NT
+                        val ntname = NTItems[0]
+                        vlist.pushb([vpair: ntname, bblocks.count])
+                        val ndprs = dprs.[ DPR2Tkn(this) == ntname ]
+                        val binx = bblocks.count
+                        var newbb = [bblockT: ntname]
+                        bblocks.pushb(newbb)
+                        // I don't fully understand why ndprs would sometimes be empty but it seems like we can use a :must in that case
+                        // IOW, this is an area that could use a bit more theory and cleanup.
+                        if(ndprs.count == 0) {
+                            newbb.instrux.pushb([:must, ntname])
+                            newbb.instrux.pushb([:reduce, allNTs[0]])
+                        } else self.construct(binx, ndprs)
+                    }
+                    bblock.instrux.pushb([:visit, vlist])
+                    return
+                }
+            }
+            // Here, we've made progress, may or may not be done. Update DPRs, delete those completed, and loop back.
+            val cb4 = dprs.count
+            dprs = dprs.[ this.ofs < DPR2Pr(this).count ]
+            anyCompleted = anyCompleted || cb4 > dprs.count     // if any deleted via completion, they affect next pass
+            if(dprs.count == 0) {
+                // we're done, push a reduce opcode. But be careful about synthd NTs.
+                val mainNT = allNonterms[dprs0[0].nt]
+                val reduceBy = mainNT.synthetic ? allNonterms[mainNT.derived[0]].name : allNTs[0]
+                if(self.optionLevel == 0) bblock.instrux.pushb([:reduce, reduceBy])
+                if(allNTs.count == 1) break
+                error = "ambiguity in nonterminals #{allNTs}"
+                return
+            }
+        }
+    }
+
+    method lithook = \mod(operators: list(list(string)), rawprods: list(rawProdn), tclassPtns: list(tknclassSpec),
+        xpctKW, brkts, cmnts, sepsarg: list(string), nlterm: boolean) {
+
+        // First, internalize the token related spec parts
+        newlineTermination = nlterm
+        opinfo4Lookahead = nil
+        optionLevel = 0
+
+        lexer = [lexerT: brkts, cmnts, sepsarg, tclassPtns]
+        if(lexer.error != "") { error = lexer.error; return self }
+
+        // Read the production rules and create allNonterms
+        allNonterms = [olistNTs: ]
+        each(rule^rawprods) {       // first pass just creates and orders the Nonterm entities
+            var ntcur = allNonterms.get(rule.name)
+            if(ntcur == nil) allNonterms.insert([Nonterm: rule.name, rule.rtyp, -1, false, [], [], false, []])
+            else if(ntcur.rtyp != rule.rtyp) { error = "Inconsistent rule types in productions for #{rule.name}"; return self }
+        }
+
+        // next, operator specs
+        exprFirst = [olistOI: ]
+        exprFollow = [olistOI: ]
+        stmtFirst = [dict(string, integer): ]
+        maxprec = operators.count
+        each(sameprec^operators, preclevel) {
+            each(oprstrg^sameprec) {
+                val opstrgParts = strings.split(oprstrg, " ")       // normally 2 parts, but 3 for prefix or postfix
+                if(opstrgParts.count == 3) {
+                    val opname = opstrgParts[0]
+                    val pfxpost = opstrgParts[2]
+                    if(pfxpost == "prefix") {
+                        val existing = exprFirst.get(opname)
+                        if(existing == nil) exprFirst.insert([oprInfo: opname, preclevel, 1, -1, [], opstrgParts[1]])
+                        else { error = "operator #{opname} defined twice!"; return self }
+                    } else if(pfxpost == "postfix") {
+                        val existing = exprFollow.get(opname)
+                        if(existing == nil) exprFollow.insert([oprInfo: opname, preclevel, 1, -1, [], opstrgParts[1]])
+                        else { error = "operator #{opname} defined twice!"; return self }
+                    }
+                    else { error = "bad argument #{pfxpost}"; return self }
+                } else {
+                    if(opstrgParts.count != 2) { error = "bad operator spec #{oprstrg}"; return self }
+                    val opname = opstrgParts[0]
+                    val existing = exprFollow.get(opname)
+                    if(existing != nil) { error = "operator #{opname} defined twice!"; return self }
+                    val trmtg = opstrgParts[1]
+                    val argc = (nonTerminalString(trmtg) == "" ? 2 : 0)      // binop or just note the precedence
+                    exprFollow.insert([oprInfo: opname, preclevel, argc, -1, [], trmtg])
+                }
+            }
+        }
+
+        // For the next step, we need to record lists of rawprods indices that may occur in exprs
+        // With Nonterms created, we can tell which body items are nonterms vs terminals. We record "keywords" for printout.
+        var keywords: olist0(string) = []
+        each(rule^rawprods, ruleinx) {
+            var ntcur = allNonterms.getOK(rule.name)
+            if(rule.rule == "") ntcur.emptyOk = true
+            else {
+                val ruleparts = strings.split(rule.rule, " ")
+                var item0 = deStar(ruleparts[0])
+                if(item0 == rule.name) { error = "rule for #{rule.name} is left recursive"; return self }
+                if(rule.rtyp == :expr) {
+                    if(item0 == "expr") {
+                        if(ruleparts.count == 1 || allNonterms.keyIn(ruleparts[1])) {
+                            error = "can't handle expr rule #{rule.rule}";
+                            return self
+                        }
+                        var oi = exprFollow.get(ruleparts[1])
+                        if(oi == nil) exprFollow.insert([oprInfo: ruleparts[1], 0, 0, -1, [], rule.name])
+                    } else {
+                        if(item0 == "stmt" || !isTerminal(item0)) { error = "expr rule may not start with nonterminal"; return self }
+                        var oi = exprFirst.get(item0)
+                        if(oi == nil) exprFirst.insert([oprInfo: item0, 0, 0, -1, [], rule.name])
+                        else if(oi.argcount > 0) {
+                            error = "prefix operator #{item0} interferes with production rule #{rule.rule}"
+                            return self
+                        }
+                    }
+                }
+                if(allNonterms.get(item0) == nil) {     // first item is a terminal, add to FirstTkns
+                    val curPI = ntcur.FirstTkns.get(item0)
+                    if(curPI == nil) ntcur.FirstTkns.insert(item0)
+                }
+                ntcur.rules.pushb(ruleparts)
+                each(tkn^ruleparts) if(identForm(tkn) && allNonterms.get(tkn) == nil && !(tkn in keywords)) keywords.insert(tkn)
+            }
+        }
+        // allNonterms, exprFirst, and exprFollow are done. Direct empties and FirstTkns are done for PRs and NTs, resp.
+        // Generate fixpt on empties and FirstTkns
+        loop {
+            var changed = false
+             each(nt^allNonterms) {
+                each(rule^nt.rules.[allNonterms.keyIn(deStar(this[0]))]) {  // enum rules whose first item is a NT
+                    val nt0 = allNonterms.getOK(deStar(rule[0]))            // if that NT is emptyOk, propagate; also for FirstTkns.
+                    if(nt0.emptyOk && !nt.emptyOk) { nt.emptyOk = true; changed = true }
+                    each(f0^nt0.FirstTkns) unless(f0 in nt.FirstTkns) { nt.FirstTkns.insert(f0); changed = true }
+                }
+             }
+             unless(changed) break
+        }
+        // Next, create bblocks. Everything must be accessible from stmt or expr so we don't independently make bblocks
+        // for general NTs. First step: find the set of rules derived from each possible first token.
+        // The key of this dict will always be a nonterminal.
+        val bbRootT = dict(string, list(dottedPR))
+        val bbRoots = [bbRootT: ]
+        val bbRootsExpr = [bbRootT: ]
+        val bbRootsPostExpr = [bbRootT: ]
+        each(nt^allNonterms, ntinx) {
+            if(nt.rtyp == :general || nt.synthetic) continue
+            each(rule^nt.rules, ruleinx) {
+                var f0 = rule[0]        // has to be a terminal by earlier checks
+                // There's a design problem here: postExpr attribute is decided per rule but applied to the whole NT
+                nt.postExpr = (f0 == "expr" || f0 in lexer.tknclassStrings)
+                var tgt = bbRoots
+                var offset0 = 1
+                if(nt.rtyp == :expr && f0 == "expr") {
+                    // special handling for rules that are in exprFollow
+                    f0 = rule[1]        // has to be a terminal by earlier checks
+                    offset0 = 2
+                    tgt = bbRootsPostExpr
+                } else if(nt.rtyp == :expr) {
+                    // and for rules that are in exprFirst
+                    f0 = rule[0]        // has to be a terminal by earlier checks
+                    tgt = bbRootsExpr
+                } else if(nt.FirstTkns.count != 1) {
+                    error = "stmt rule #{nt.name} has multiple first tokens"
+                    return self
+                }
+                val xbrt = tgt[f0]
+                val ndpr = [dottedPR: ntinx, ruleinx, offset0]
+                if(xbrt == nil) tgt[f0] = [ndpr] else tgt[f0] = xbrt.pushb(ndpr)
+            }
+        }
+//        each(nt^allNonterms, ntinx) {
+//            val opt = (nt.emptyOk ? "emptyOk" : "")
+//            print("NT #{ntinx}: #{nt.name}, #{nt.rtyp} #{opt} #{nt.FirstTkns}: ")
+//            each(rl^nt.rules) {print(rl); print("; ")}; println()
+//        }
+        var expectedKeywords = [olist0(string): xpctKW]
+        expectedKeywords.insert("expr")
+        expectedKeywords.insert("stmt")
+        each(tks^lexer.tknclassStrings) expectedKeywords.insert(tks)
+        val extras = keywords.diff(expectedKeywords)
+        if(extras.count > 0) println("undeclared keywords: ", extras)
+        each(brpair^bbRoots) {
+            if(brpair.key == "expr") {   // must be a stmt starting with expr
+                val follow = brpair.value.{ DPR2Tkn(this) }.uniq
+                if(any(follow.{nonTerminalString(this) != ""})) {
+                    error = "cannot compile stmt rule starting with expr"
+                    return self
+                }
+                each(postx^follow) {
+                    val bbinx = allocBBlock(brpair.value, true)
+                    stmtPostExpr.pushb([tkn~postx, bbinx~bbinx])
+                    construct(bbinx, brpair.value.[DPR2Tkn(this) == postx])
+                }
+            } else {
+                val bbinx = allocBBlock(brpair.value, true)
+                stmtFirst[brpair.key] = bbinx
+                construct(bbinx, brpair.value)
+          }
+            if(error != "") return self
+        }
+        each(brpair^bbRootsExpr) {
+            val bbinx = allocBBlock(brpair.value, true)
+            var oi = exprFirst.getOK(brpair.key)
+            oi.special = bbinx
+            construct(bbinx, brpair.value)
+            if(error != "") return self
+        }
+        each(brpair^bbRootsPostExpr) {
+            val bbinx = allocBBlock(brpair.value, true)
+            var oi = exprFollow.getOK(brpair.key)
+            oi.special = bbinx
+            if(oi.argcount == 2) opinfo4Lookahead = oi       // note: will get cleared in construct
+            construct(bbinx, brpair.value)
+            if(error != "") return self
+        }
+        // Now generate the "as subroutine" bblocks for NTs
+        generatingSubrs = true
+        each(nt^allNonterms, ntinx) {
+            // Hack alert: nt.binx >= 0 means nt was called in itemUsed. But we need the transclosure of that which
+            // we are not calculating. Instead, generating subroutine bblock for every general rule may generate a few
+            // that aren't needed but gets close.
+            if((nt.binx >= 0 || nt.rtyp == :general) && !nt.synthetic) {
+                nt.binx = bblocks.count
+                val dprs = nt.initDprs(ntinx)
+                bblocks.pushb([bblockT: [[:start, nt.name]], nt.name])
+                construct(nt.binx, dprs)
+            }
+        }
+        self
+    }
+}
+
+// parseCxt holds lexer state and provides getToken method as well as some other, simpler methods.
+val parseCxt = extend tuple(ofs, linenum, linestart: integer, tknval, toktype: string) where {
+    method clear = \mod() { ofs = 0; linenum = 1; linestart = 0; tknval = ""; toktype = "" }
+    method makeLeaf = \() { [Term: toktype, tknval, ofs] }
+    method nextLine = \mod() { linenum += 1; linestart = ofs }
+    method makeErrorTerm = \(errmsg: string) { [Term: "error", "error: #{errmsg} at #{linenum}:#{ofs - linestart}", ofs] }
+
+    // We call this with self.ofs positioned just after the start of a comment whose ending pattern is endptn.
+    // Update ofs, linenum, etc., to the first char after end of comment.
+    // Return an errmsg if unterminated, else "".
+    private method skipComment = \mod(bytes, endptn: list(byte)) -> string {
+        val lastinx = bytes.count - endptn.count
+        loop {
+            if(bytes[ofs] == '\n') nextLine()
+            unless(ofs < lastinx && bytes[ofs...ofs + endptn.count] != endptn) break
+            ofs += 1
+        }
+        if(ofs == lastinx) return "unterminated comment"
+        ofs += endptn.count
+        ""
+    }
+
+    method getToken = \mod(bytes: list(byte), lexer: lexerT) -> string {
+        // get to first position that's not whitespace or comment start
+        var redo = true
+        while(redo) {
+            redo = false
+            while(ofs < bytes.count && (bytes.spacetab(bytes[ofs]) || bytes[ofs] == '\n')) {
+                if(bytes[ofs] == '\n') nextLine()
+                ofs += 1
+            }
+            if(ofs >= bytes.count) { tknval = ""; toktype = "end"; return "" }
+            each(ptn^lexer.comments.[index % 2 == 0], inx) {
+                val endposn = ofs + ptn.count
+                if(endposn < bytes.count && bytes[ofs...endposn] == ptn) {
+                    ofs += ptn.count
+                    val errstrg = skipComment(bytes, lexer.comments[inx * 2 + 1])
+                    if(errstrg != "") return errstrg
+                    redo = true
+                    break
+                }
+            }
+        }
+
+        // At this point, there's something there and it's not a comment. Try brackets, seps, token classes, oprs
+        val inx0 = ofs
+        var b = bytes[inx0]
+        val brktinx = lexer.bracketStarts.index(b)
+        if(brktinx != nil) {
+            toktype = "brkt"
+            if(lexer.hasMulticharBrkt) {
+                // note: must recalc with brackets since can't assume initial chars are disjoint
+                val binx = lexer.brackets[this == cvt(bytes[inx0...inx0+this.count], string) => index]
+                if(binx != nil) {
+                    ofs += lexer.brackets[binx].count - 1
+                }
+            }
+            ofs += 1
+            tknval = cvt(bytes[inx0...ofs], string)
+            return ""
+        }
+        if(b in lexer.seps) {
+            toktype = "opr"
+            ofs += 1
+            tknval = cvt(bytes[inx0...ofs], string)
+            return ""
+        }
+        val ftcps = lexer.fixedTknclassPatterns
+
+        // Try ident, as user-supplied pattern or builtin
+        unless(ftcps.ident.disabled || ftcps.ident.rx == nil) {
+            val match = ftcps.ident.rx.findIndex(bytes[ofs...bytes.count])
+            if(match != []) {
+                toktype = "ident"
+                ofs += match[1]
+                tknval = cvt(bytes[inx0...ofs], string)
+                return ""
+            }
+        } else if(!ftcps.ident.disabled && bytes.alpha(b)) {
+            toktype = "ident"
+            while(ofs < bytes.count && bytes.alphanum(bytes[ofs])) ofs += 1
+            tknval = cvt(bytes[inx0...ofs], string)
+            return ""
+        }
+        // Try int and flt, as user-supplied pattern or builtin
+        unless(ftcps.int.disabled || ftcps.int.rx == nil) {
+            val match = ftcps.int.rx.findIndex(bytes[ofs...bytes.count])
+            if(match != []) {
+                toktype = "int"
+                ofs += match[1]
+                tknval = cvt(bytes[inx0...ofs], string)
+                return ""
+            }
+        } else unless(ftcps.flt.disabled || ftcps.flt.rx == nil) {      // symbol start
+            val match = ftcps.flt.rx.findIndex(bytes[ofs...bytes.count])
+            if(match != []) {
+                toktype = "flt"
+                ofs += match[1]
+                tknval = cvt(bytes[inx0...ofs], string)
+                return ""
+            }
+        } else if(!ftcps.flt.disabled && b == '.' && ofs < bytes.count && bytes.digit(bytes[ofs+1])) {
+            // no flt ptn, handle initial dot here; expon is not admitted here
+            toktype = "flt"
+            ofs += 1
+            while(ofs < bytes.count && bytes.digit(bytes[ofs])) ofs += 1
+            tknval = cvt(bytes[inx0...ofs], string)
+            return ""
+        } else if(!ftcps.int.disabled && bytes.digit(b)) {
+            toktype = "int"
+            while(ofs < bytes.count && bytes.digit(bytes[ofs])) ofs += 1
+            if(ofs < bytes.count) {
+                b = bytes[ofs]
+                var sawDot = false
+                if(ofs < bytes.count - 1 && (b == '.' || b == 'e' || b == 'E') && (bytes.digit(bytes[ofs+1]) || bytes[ofs+1] == '-')) {
+                    sawDot = b == '.'
+                    toktype = "flt"
+                    ofs += 2
+                    while(ofs < bytes.count && bytes.digit(bytes[ofs])) ofs += 1
+                    ofs += 1
+                    if(ofs < bytes.count && sawDot && (bytes[ofs] == 'e' || bytes[ofs] == 'E')) {
+                        ofs += 1
+                        if(ofs == bytes.count) return "malformed floating token at line #{linenum}"
+                        else {
+                            if(bytes[ofs] == '-') {
+                                ofs += 1
+                            }
+                            if(ofs == bytes.count) return "malformed floating token at line #{linenum}"
+                            else {
+                                while(ofs < bytes.count && bytes.digit(bytes[ofs])) ofs += 1
+                            }
+                        }
+                    }
+                }
+            }
+            tknval = cvt(bytes[inx0...ofs], string)
+            return ""
+        }
+
+        // Try strg, as user-supplied pattern or builtin
+        // Strgs can generally be multiline, so check for newlines and add to linecount
+        unless(ftcps.strg.disabled || ftcps.strg.rx == nil) {
+            val match = ftcps.strg.rx.findIndex(bytes[ofs...bytes.count])
+            if(match != []) {
+                toktype = "strg"
+                ofs += match[1]
+                val strgseg = bytes[inx0...ofs]
+                linenum += strgseg.[this == '\n'].count
+                tknval = cvt(strgseg, string)
+                return ""
+            }
+        } else if(!ftcps.strg.disabled && b in ['`', '"', '\'']) {
+            val closequote = b
+            toktype = "strg"
+            val linecnt0 = linenum
+            ofs += 1        // skip opening quote
+            while(ofs < bytes.count && bytes[ofs] != closequote) {
+                if(bytes[ofs] == '\n') {
+                    nextLine()
+                    if(closequote != '`') return "newline may not occur in string at line #{linecnt0}"
+                } else if(closequote == '"' && bytes[ofs] == '\\') {
+                    ofs += 1
+                }
+                ofs += 1
+            }
+            if(ofs >= bytes.count) return "unterminated string at line #{linecnt0}"
+            ofs += 1
+            tknval = cvt(bytes[inx0...ofs], string)
+            return ""
+        }
+        each(utcp^lexer.userTknclassPatterns) {
+            val match = utcp.regexp.findIndex(bytes[ofs...bytes.count])
+            if(match != []) {
+                toktype = utcp.tknclass
+                ofs += match[1]
+                tknval = cvt(bytes[inx0...ofs], string)
+                // println("returning #{toktype} token ", tknval)
+                return ""
+            }
+        }
+        // At this point, we're at a token bndry but nothing has matched, so it's opr
+        toktype = "opr"
+        ofs += 1            // consume at least one character
+        while(ofs < bytes.count) {
+            b = bytes[ofs]
+            if(bytes.spacetab(b) || bytes.alphanum(b) || b in lexer.seps || b in lexer.bracketStarts || b == '\'' || b == '`' || b == '"' || b == '\n') break
+            ofs += 1
+        }
+        tknval = cvt(bytes[inx0...ofs], string)
+        return ""
+    }
+}
+
+// parseState provides state and all parsing methods. Create with langDefn, load input string into bytes attribute,
+// and start parsing.
+val parseState = extend tuple(langdef: langDefn) where {
+    attribute bytes: list(byte)            // content being parsed
+    attribute cxt: parseCxt                // cxt info for parsing with save & restore methods defined below
+    attribute prevtkn: parseCxt
+    attribute termstack: list(Term)
+    attribute oprstack: list(oprInfo)
+    attribute error: nilPossible(Term)
+    attribute curStmtFirst: string
+    attribute starredReduce: list(string)
+    attribute tokenCheck: nilPossible(\mod(parseState)->nothing)
+
+    method setError = \mod(errmsg: string) {
+        // println("setError: ", errmsg)       // for dbgg
+        if(error == nil) {
+            error = cxt.makeErrorTerm(errmsg)
+        }
+    }
+    assert noInline(setError)
+
+    // nxToken wraps getToken with a few things: handle error return, and the tokenCheck hook. Also, a spot for dbgprint if needed
+    method nxToken = \mod() {
+        prevtkn = copy(cxt)
+        val errstrg = cxt.getToken(bytes, langdef.lexer)
+        if(tokenCheck != nil) tokenCheck(self)
+        if(errstrg != "") setError(errstrg)
+//        println("getToken:", cxt.toktype, cxt.tknval)
+    }
+    assert noInline(nxToken)
+
+    // Is the main method for scanning. When calling scanBracket, current token must be an open bracket.
+    // Creates and maintains a list(integer) with the initial depths
+    // of each defined bracket -- 1 for the one we've just seen and 0 for the others. Scan forward token
+    // by token, updating this list, until all elts are 0 or we run out of tokens. (The latter is an error
+    // but we simply return.)
+    method scanBracket = \mod(startIndex: integer) {
+        var brktDepths = (0...langdef.lexer.brackets.count/2).{ index == startIndex ? 1 : 0 }
+        while(sigma(brktDepths) > 0 && cxt.toktype != "end") {
+            nxToken()
+            if(cxt.toktype == "brkt") {
+                val brktInx0 = always(x~langdef.lexer.brackets[this == cxt.tknval => index], x != nil)
+                val incr = (brktInx0 % 2 == 0 ? 1 : -1)
+                brktDepths[brktInx0/2] += incr
+            }
+        }
+        nxToken()       // skip closing brkt
+    }
+
+    // makea the offset available, just a convenience since cxt is not private
+    method getByteOffset = \() { cxt.ofs }
+
+    // create and return a parseCxt that can be restored later
+    method saveCxt = \mod() {
+        copy(cxt)
+    }
+
+    method restoreCxt = \mod(svcxt: parseCxt) {
+        cxt = copy(svcxt)
+    }
+
+    method makeTerm = \mod(termtag: string, startinx: integer) {
+        var rslt:Term
+        if(termstack.count == startinx) rslt = [Term: termtag, [], cxt.ofs]
+        else {
+            val a0 = termstack[startinx], endinx = termstack.count
+            // note: copy needed because select semantics is broken
+            rslt = [Term: termtag, copy(termstack[startinx...endinx]), cxt.ofs]
+            termstack.removeSeq(startinx, endinx)
+        }
+        rslt
+    }
+
+    // true if what's in cxt is in the First set of expr
+    method firstTokenExpr = \() {
+        cxt.toktype in langdef.lexer.tknclassStrings || langdef.exprFirst.keyIn(cxt.tknval)
+    }
+    method firstTokenStmt = \() {
+        langdef.stmtFirst[cxt.tknval] != nil || firstTokenExpr()
+    }
+
+    // provides support for newlineTermination: predicate is true if last getToken skipped past a newline
+    method passedLine = \() {
+        bytes[prevtkn.ofs...cxt.ofs][this == '\n'] != nil && firstTokenStmt()
+    }
+
+    // Is true if current token matches the arg, which can be the name of a token class
+    method matchTerminal = \(tkn: string) {
+        (tkn in langdef.lexer.tknclassStrings && cxt.toktype == tkn) || cxt.tknval == tkn
+    }
+
+    method lithook = \mod(ldef: langDefn) {
+        error = (ldef.error == "" ? nil : [Term: "language defn error", ldef.error, 0])
+        langdef = ldef
+        cxt = [parseCxt: 0, 0, 0, "", ""]
+        termstack = []
+        oprstack = []
+        curStmtFirst = ""
+        starredReduce = []
+        tokenCheck = nil
+    }
+}
+
+// fwd decls for mutual recursion
+val parseBlock : \mod(parseState, bblockT) -> boolean
+val parseStmt : \mod(parseState) -> nilPossible(Term)
+
+// ParseExpr runs the shift/reduce machinery associated with the operators given to the langDefn plus
+// any bblocks designated as expr. It returns the Term representing the expr if successful, else nil.
+// When called, we haven't consumed the first token yet but we know it's in cxt and is in the first set of expr.
+// This function is not directly recursive but needs to balance the termstack coming and going.
+val parseExpr = \mod(ps: parseState) -> nilPossible(Term) {
+    // reduce a unary or binary operator onto the termstack and return its precedence
+    val reduceOpr = \mod(ps0: parseState) {
+        val tscnt = ps0.termstack.count
+        val oi2 = always(x~ps0.oprstack.popb, x != nil)
+        // print("parse expr reducing on #{oi2.termtag}; leaving #{tscnt + 1 - oi2.argcount} terms & #{ps0.oprstack.count} opinfos; ")
+        val trm = ps0.makeTerm(oi2.termtag, tscnt - oi2.argcount)
+        ps0.termstack.pushb(trm)
+        // println(strings.join(ps0.termstack.{kind}, ","), "; ", strings.join(ps0.oprstack.{termtag}, ","))
+        oi2.prec
+    }
+    var curprec = ps.langdef.maxprec
+    val oprcount = ps.oprstack.count
+    var wantTerm = true
+    // loop processes shift-reduce decisions until we hit a token not in expr
+    loop {
+        if(wantTerm) {
+            // get something on the termstack
+            val xstart = ps.langdef.exprFirst.get(ps.cxt.tknval)
+            if(xstart != nil) {
+                if(xstart.argcount > 0) {
+                    ps.oprstack.pushb(xstart)   // got a prefix opr
+                } else {
+                    // println("parse expr gets initial NT #{xstart.termtag}")
+                    ps.nxToken()
+                    unless(parseBlock(ps, ps.langdef.bblocks[xstart.special])) return nil
+                }
+            } else if(ps.cxt.toktype in ps.langdef.lexer.tknclassStrings) {        // anything but a leaf token class must be in exprProdnsMap
+                // println("parse expr push leaf", ps.cxt.toktype)
+                ps.termstack.pushb(ps.cxt.makeLeaf())
+                ps.nxToken()
+            } else break
+        }
+        // this is the "get postexpr or binop" part
+        wantTerm = false
+        var oprinfo = ps.langdef.exprFollow.get(ps.cxt.tknval)
+        if(oprinfo == nil || ps.error != nil) break
+        // check for postfix and whether there's a bblock for this, if neither, it's a binop
+        if(oprinfo.argcount == 1) { ps.oprstack.pushb(oprinfo); ps.nxToken() }      // postfix
+        else {
+            var done = false
+            if(oprinfo.special >= 0) {
+                // post-expr production: parse and reduce. But first check conflict with binop, if so do lookahead.
+                val svcxt = ps.saveCxt()
+                ps.nxToken()
+                // if it isn't a binop (argcount = 0) or cur tkn is in the special list of follow tokens, run the bblock
+                if(oprinfo.argcount == 0 || any(oprinfo.firstTokens.{ps.matchTerminal(this)})) {
+                    while(ps.oprstack.count > oprcount && curprec <= oprinfo.prec) curprec = ps.reduceOpr()
+                    val bblock = ps.langdef.bblocks[oprinfo.special]
+                    unless(parseBlock(ps, bblock)) return nil
+                    done = true
+                } else ps.restoreCxt(svcxt)
+            }
+            unless(done) {        // binop
+                 while(ps.oprstack.count > oprcount && curprec <= oprinfo.prec) curprec = ps.reduceOpr()
+                 ps.oprstack.pushb(oprinfo)
+                 curprec = oprinfo.prec
+                 ps.nxToken()
+                 wantTerm = true
+            }
+        }
+    }
+    if(ps.error != nil) return ps.error
+    while(ps.oprstack.count > oprcount && ps.oprstack[ps.oprstack.count-1].prec >= 0) ps.reduceOpr()
+    ps.termstack.popb
+}
+
+// Parse the single item "what", which can be a fixed token, token class name, NT name, "expr", or "stmt".
+val parseOne = \mod(ps: parseState, what: string) -> boolean {
+    // println("parseOne(#{what}) with tkn=", ps.cxt.toktype, ps.cxt.tknval)
+    if(what in ps.langdef.lexer.tknclassStrings && ps.cxt.toktype == what) {
+        ps.termstack.pushb(ps.cxt.makeLeaf())
+        ps.nxToken()
+    } else if(what == "expr") {
+        val trm0 = parseExpr(ps)
+       if(trm0 == nil) return false
+       ps.termstack.pushb(trm0)
+    } else if(what == "stmt") {
+        val trm0 = parseStmt(ps)
+        if(trm0 == nil) return false
+        ps.termstack.pushb(trm0)
+    } else if(what == ";" && ps.langdef.newlineTermination) {
+        if(ps.cxt.tknval == ";") ps.nxToken()
+        else unless(ps.passedLine()) return false
+        return true
+    } else {
+        val nts = ps.langdef.nonTerminalString(what)
+        if(nts != "") {
+            val nt = ps.langdef.allNonterms.getOK(nts)
+            return parseBlock(ps, ps.langdef.bblocks[nt.binx])
+        } else if(ps.cxt.tknval == what) {
+            // next line handles starttkn case, where we want to push tokens normally ignored
+            if(ps.oprstack.count != 0 && ps.oprstack.last.special == -3) ps.termstack.pushb(ps.cxt.makeLeaf())
+            ps.nxToken()
+        } else return false
+    }
+    true
+}
+
+// ParseBlock loops through a bblock, calling the correct parsing fn for each item. It returns true if it gets to the
+// end of the block, false if it fails along the way.
+val parseBlock = \mod(ps: parseState, curBlock: bblockT) -> boolean {
+    each(item^curBlock.instrux) {
+        if(ps.error != nil) return false
+        if(item.action == :must) {
+            val what = asString(item)
+            val tsdepth = ps.termstack.count
+            if(what[what.count - 1] == '*') ps.starredReduce.pushb(what[0...what.count-1])
+            val ok = ps.parseOne(what)
+            if(what[what.count - 1] == '*') ps.starredReduce.popb()
+            unless(ok) {
+                ps.setError("expected " + what)
+                return false
+            }
+        } else if(item.action == :optional) {
+            val what = asIndex(item)
+            val bblock = ps.langdef.bblocks[what]
+            val firsts = ps.langdef.firstTokens(what)
+            val hasX = "expr" in firsts, hasS = "stmt" in firsts, hasSemi = ";" in firsts
+            var pursue = any(firsts.{ps.matchTerminal(this)}) || (hasX && ps.firstTokenExpr()) ||
+                (hasS && ps.firstTokenStmt()) || (hasSemi && ps.passedLine())
+//            println("parse optional #{what}:", pursue ? "found" : "not found")
+            if(pursue) {
+                var firstOk = ps.parseBlock(bblock)
+                unless(firstOk) {
+                    ps.setError("expected " + strings.join(firsts, " or "))
+                    return false
+                }
+            }
+        } else if(item.action == :start || item.action == :starttkn) {
+            val what = asString(item)
+            // Record the current termstack index, possibly adjusted for post-expr nonterminals
+            var offset = ps.termstack.count
+            val nt = ps.langdef.allNonterms.getOK(what)
+            if(nt.postExpr) offset -= 1
+            val specval = (item.action == :start ? -2 : -3)
+            ps.oprstack.pushb([oprInfo: what, -1, offset, specval, [], what])
+        } else if(item.action == :reduce) {
+            val what = asString(item)
+            val oi = always(x~ps.oprstack.popb, x != nil)
+            if(oi.prec >= 0) exit("bad oprInfo")
+            if(ps.starredReduce != [] && ps.starredReduce.last == what) {
+                var topterm = always(x~ps.termstack.popb, x!=nil)
+                if(oi.argcount - ps.termstack.count > 1) exit("can't handle multiple args in starred reductions")
+                if(topterm.kind == what) {
+                    val trm = always(x~ps.termstack.popb, x!=nil)
+                    topterm.arg = asTerms(topterm).pushf(trm)
+                } else topterm = [Term: what, [topterm], topterm.loc]
+                ps.termstack.pushb(topterm)
+            } else ps.termstack.pushb(ps.makeTerm(what, oi.argcount))
+        } else {
+            // must be :visit. So this is the last item in curBlock.instrux.
+            // NT will be last, if present. Must special case expr as well.
+            val visitOptions = asVisits(item)
+            each(opt^visitOptions) {
+                if(ps.matchTerminal(opt.tkn) || (opt.tkn == "expr" && ps.firstTokenExpr) || ps.langdef.allNonterms.keyIn(opt.tkn))
+                    return ps.parseBlock(ps.langdef.bblocks[opt.stateinx])
+            }
+            val lastoption = visitOptions[visitOptions.count - 1]
+            if(lastoption.tkn == "") return ps.parseBlock(ps.langdef.bblocks[lastoption.stateinx])
+            ps.setError("expected " + strings.join(visitOptions.{tkn}, " or "))
+            return false        // no visit option matched, that's a fail
+        }
+    }
+    true
+}
+
+// ParseStmt should be called when the parseState is in the First set of stmt (which contains the
+// First set of expr). It parses either the stmt bblock corresponding to the current token or an
+// expr. It returns the resulting Term on success, else nil.
+val parseStmt = \mod(ps: parseState) -> nilPossible(Term) {
+    val binx = ps.langdef.stmtFirst[ps.cxt.tknval]
+    // println("parseStmt(#{binx = nil ? -1 : binx}) with tkn=", ps.cxt.toktype, ps.cxt.tknval)
+    // This is the code that implements the rule that expr is a stmt
+    if(binx == nil) {
+        var trm0: nilPossible(Term)
+        if(ps.firstTokenExpr) trm0 = parseExpr(ps)
+        if(trm0 == nil) return nil
+        val follow = ps.langdef.stmtPostExpr[this.tkn == ps.cxt.tknval]
+        ps.termstack.pushb(trm0)
+        if(follow != nil) {
+            if(!parseBlock(ps, ps.langdef.bblocks[follow.bbinx])) return nil
+        }
+    } else {
+        ps.nxToken()
+        if(!parseBlock(ps, ps.langdef.bblocks[binx])) return nil
+    }
+     ps.termstack.popb
+}
+
+// ScanStmt should be called when the parseState is in the First set of stmt (which contains the First set of expr). If not,
+// return -1, else return the starting position of the token after the last one in the scan.
+// Move parseCxt to after final token of current statement/expr by imitating the full parse algorithm with two main differences:
+// no Term creation, and skipping across balanced brackets that occur in the parse, so that only tokenization and balance counting
+// needs to be done.
+val scanStmt = \mod(ps: parseState) -> integer {
+    // return index in ps.lexer.brackets if what matches a bracket, else -1. Optimize via bracketStarts
+    val bracketCheck = \(what: string) {
+        if(what == "") -1
+        else {
+            val brktnum = ps.langdef.lexer.bracketStarts.index(what[0])
+            if(brktnum == nil) -1
+            else if(ps.langdef.lexer.hasMulticharBrkt) always(x~ps.langdef.lexer.brackets[this == what => index], x != nil)
+            else brktnum
+        }
+    }
+    val scanExpr: \() -> nothing        // fwd decl
+    val scanBlock: \(bblockT, string) -> nothing    // fwd decl
+    val scanOneStmt = \imp() -> nothing {
+        val tkn0 = ps.cxt.tknval
+        //println("scan1stmt", tkn0)
+        val binx = ps.langdef.stmtFirst[tkn0]
+        if(binx == nil) {
+            if(ps.firstTokenExpr) scanExpr()
+            val follow = ps.langdef.stmtPostExpr[this.tkn == ps.cxt.tknval]
+            if(follow != nil) scanBlock(ps.langdef.bblocks[follow.bbinx], ps.cxt.tknval)
+        } else {
+            ps.nxToken()
+            scanBlock(ps.langdef.bblocks[binx], tkn0)
+        }
+    }
+    // handle cases: fixed token, "expr", "stmt", else the "subroutine" form of NT. Conditions vfyd before calling this
+    // and the what arg has been run through nonTerminalString.
+    val scanStep = \(what: string) -> nothing {
+        //println("scanStep(#{what}) @ ", ps.cxt.tknval)
+        if(ps.matchTerminal(what)) ps.nxToken()
+        else if(what == "expr") scanExpr()
+        else if(what == "stmt") scanOneStmt()
+        else {
+            val nt = ps.langdef.allNonterms.getOK(ps.langdef.nonTerminalString(what))
+            scanBlock(ps.langdef.bblocks[nt.binx], "")
+        }
+    }
+    // scan a bblock, driven by tkn0 which can help balance brackets
+    val scanBlock = \imp(bblock: bblockT, tkn0: string) -> nothing {
+        // bracketsInBBlock is a list of pairs of [bracket index, curBlock index] for must instrux requiring brackets
+        var bracketsInBBlock = bblock.instrux.{action == :must ? bracketCheck(asString(this)) : -1}.[this >= 0 => [list(integer): this, index]]
+        val tkn0Index = bracketCheck(tkn0)
+        if(tkn0Index >= 0) bracketsInBBlock.pushf([tkn0Index, 0])
+        // we don't need inner pairs in the unlikely case that a bblock has them, so fix that next.
+        // the notNil here assumes count > 2 doesn't infer count != 0, which obviously, it could do.
+        if(bracketsInBBlock.count > 2) bracketsInBBlock = [bracketsInBBlock[0], always(x~bracketsInBBlock.last, x != nil)]
+        // So at this point, bracketsInBBlock is probably [] but could have a pair of brackets
+        val bbbcount = bracketsInBBlock.count
+        var skipcount = 0           // to enable skipping stuff we scanned through with balanced brackets
+        var bbbinx = -1
+        // If brackets indicated but not simple form in bblock, ignore
+        if(bbbcount == 2 && bracketsInBBlock[0][0] == bracketsInBBlock[1][0] - 1) bbbinx = bracketsInBBlock[0][1]
+        each(item^bblock.instrux, cbinx) {
+            if(skipcount > 0) { skipcount -= 1; continue }
+            if(cbinx == bbbinx) {    // are we at an open bracket instruction? Whee...here we go!
+                //print("scanBracket(#{bracketsInBBlock[0][0]/2}) @ ", ps.cxt.tknval)
+                ps.scanBracket(bracketsInBBlock[0][0]/2)
+                //println("...tkn after:", ps.cxt.tknval)
+                skipcount = bracketsInBBlock[1][1] - cbinx
+                continue
+            }
+            //println("scanBlock, item=#{item} @ #{ps.cxt.tknval}")
+            case {      // note: ignore :start, :reduce, etc
+                item.action == :must => {
+                    // not a bracket, plod along
+                    scanStep(asString(item))
+                }
+                item.action == :optional => {
+                    val bbinx = asIndex(item)
+                    val bblock = ps.langdef.bblocks[bbinx]
+                    val firsts = ps.langdef.firstTokens(bbinx)
+                    val hasX = "expr" in firsts, hasS = "stmt" in firsts
+                    var pursue = any(firsts.{ps.matchTerminal(this)}) ||
+                        (hasX && ps.firstTokenExpr()) || (hasS && ps.firstTokenStmt())
+                    if(pursue) scanBlock(bblock, ps.cxt.tknval)
+                }
+                item.action == :visit => {
+                    val visitOptions = asVisits(item)
+                    var somethingDone = false
+                    each(opt^visitOptions) {
+                        val isTkn = ps.matchTerminal(opt.tkn)
+                        if(isTkn || (opt.tkn == "expr" && ps.firstTokenExpr) || ps.langdef.allNonterms.keyIn(opt.tkn)) {
+                            scanBlock(ps.langdef.bblocks[opt.stateinx], "")
+                            somethingDone = true
+                            break
+                        }
+                    }
+                    unless(somethingDone) {
+                        val lastoption = visitOptions[visitOptions.count - 1]
+                        if(lastoption.tkn == "") scanBlock(ps.langdef.bblocks[lastoption.stateinx], "")
+                    }
+                }
+            }
+        }
+    }
+    // Mimic the simple FSM in parseExpr that handles first and follow
+    val scanExpr = \imp() -> nothing {
+        //println("enter scanExpr @", ps.cxt.tknval)
+        var wantTerm = true
+        loop {
+            if(wantTerm) {
+                val xstart = ps.langdef.exprFirst.get(ps.cxt.tknval)
+                if(xstart != nil) {
+                    if(xstart.argcount <= 0) {
+                        ps.nxToken()
+                        //println("calling scanBlock on", xstart.special)
+                        scanBlock(ps.langdef.bblocks[xstart.special], xstart.opr)
+                    }
+                } else if(ps.cxt.toktype in ps.langdef.lexer.tknclassStrings) {
+                    ps.nxToken()
+                } else break
+            }
+            wantTerm = false
+            var oprinfo = ps.langdef.exprFollow.get(ps.cxt.tknval)
+            if(oprinfo == nil) break
+            if(oprinfo.argcount != 1) {     // argcount 1 is postfix opr which just gets scanned
+                var done = false
+                if(oprinfo.special >= 0) {
+                    // post-expr production: parse and reduce. But first check conflict with binop, if so do lookahead.
+                    val svcxt = ps.saveCxt()
+                    ps.nxToken()
+                    if(oprinfo.argcount == 0 || any(oprinfo.firstTokens.{ps.matchTerminal(this)})) {
+                        //println("calling scanBlock on", oprinfo.special)
+                        scanBlock(ps.langdef.bblocks[oprinfo.special], oprinfo.opr)
+                        done = true
+                    } else ps.restoreCxt(svcxt)
+                }
+                unless(done) {        // binop
+                     ps.nxToken()
+                     wantTerm = true
+                }
+            }
+        }
+        //println("exit scanExpr @", ps.cxt.tknval)
+    }
+    val binx = ps.langdef.stmtFirst[ps.cxt.tknval]
+    if(binx == nil) {
+        if(ps.firstTokenExpr()) scanExpr()
+        else return -1
+    } else {
+        val tkn0 = ps.cxt.tknval
+        ps.nxToken()
+        scanBlock(ps.langdef.bblocks[binx], tkn0)
+    }
+    // assume we've peeked to the token following whatever we scanned, unless we're at end of string. Therefore,
+    // calculate the ending position by subtracting current token size from cxt.ofs
+    ps.cxt.toktype == "end" ? ps.cxt.ofs : ps.cxt.ofs - ps.cxt.tknval.count
+}
+
+// ParseStmts parses a list of stmts and returns a list(Term). It's the appropriate wrapper for parsing the entirety of
+// a standard text consisting of a list of stmts. If you need to do anything unusual during the parse, it's easy to construct
+// a specialized list parser from parseStmt and/or parseExpr.
+val parseStmts = \mod(ps: parseState) -> list(Term) {
+    var stmts: list(Term) = []
+    while(ps.cxt.toktype != "end") {
+        if(ps.error != nil) { stmts.pushb(ps.error); break }
+        if(ps.cxt.tknval == ";") ps.nxToken()
+        var stmt = parseStmt(ps)
+        if(stmt == nil) stmt = (ps.error == nil ? ps.cxt.makeErrorTerm("stmt fail") : ps.error)
+        assert stmt != nil
+        // println("parse pushing stmt", stringify(stmt))
+        stmts.pushb(stmt)
+    }
+    return stmts
+}
+
+
+val d8mOperators = [[". dot"],
+    ["- unopminus prefix", "! unopbang prefix", "( funcall", "[ index"],
+    ["* mult", "/ div", "% pcnt"],
+    ["+ plus", "- sub"], [".. dotdot", "... dot3", "in in"],
+    ["< lt", "> gt", "<= le", ">= ge"],
+    ["|| oror", "&& andand", "? qcolon"],
+    ["@ at", "^ caret", "~ tilde"],
+    ["= eq", "== eqeq", "!= neq", "!== neqeq", "+= pluseq", "-= subeq", "*= multeq", "/= diveq"]]
+
+val d8mSeparators = [",", ";", "^", "~"]
+val d8mComments = ["/*", "*/", "//", "\n"]
+val d8mBrackets = ["{", "}", "(", ")", "[", "]"]
+val tclassLabel = [tknclassSpec: "label", "^:[_A-Za-z]\\w*"]
+val tclassQuoted = [tknclassSpec: "quotedopr", "^\\$\\S*"]      // This is for $< and the like
+val d8mKeywords = ["as", "assert", "attribute", "break", "case", "continue", "dimension", "each", "else", "export",
+    "extend", "given", "go", "if", "import", "loop", "map", "melted", "method", "oncondition", "ortype", "private", "return",
+    "tuple", "unless", "val", "var", "where", "while"]
+
+val rawprodnsD8m: list(rawProdn) = [
+    	["qcolon", :expr, "expr ? expr : expr"],
+    	["ifstmt", :stmt, "if ( expr ) stmt"],
+    	["ifstmt", :stmt, "if ( expr ) stmt else stmt"],
+    	["ifexpr", :expr, "if ( expr ) stmt else stmt"],
+    	["unlessstmt", :stmt, "unless ( expr ) stmt"],
+    	["unlessstmt", :stmt, "unless ( expr ) stmt else stmt"],
+    	["unlessexpr", :expr, "unless ( expr ) stmt else stmt"],
+    	["identlist", :general, "ident"],
+    	["identlist", :general, "ident , identlist*"],
+    	["exprlist", :general, "expr"],
+    	["exprlist", :general, "expr , exprlist*"],
+    	["dotbrace", :expr, "expr . { stmtlist* }"],
+    	["dotbracket", :expr, "expr . [ stmtlist* ]"],
+    	["litform", :expr, "[ expr : exprlist ]"],
+    	["litform", :expr, "[ expr : ]"],
+    	["litform", :expr, "[ exprlist ]"],
+    	["litform", :expr, "[ ]"],
+    	["parenx", :expr, "( expr )"],
+    	["decl0", :general, "identlist : expr"],        // note: similar to decl, defined later, but excludes = opr
+    	["decllist0", :general, "decl0"],
+    	["decllist0", :general, "decl0 , decllist0*"],
+    	["tuplexpr", :expr, "tuple ( decllist0* )"],
+    	["ortypexpr", :expr, "ortype ( decllist0* )"],
+    	["funcall", :expr, "expr ( )"],
+    	["funcall", :expr, "expr ( exprlist* )"],
+    	["index", :expr, "expr [ expr ]"],
+    	// note that fnsiglit combines fnsig (fn type decl) with fnlit (fn literal). Because ambiguity.
+    	["falst", :general, "exprlist"],
+    	["falst", :general, "exprlist fndeclSep expr"],
+    	["falst", :general, "exprlist fndeclSep expr , falst"],
+    	["fnsiglit", :expr, "\\ ( ) -> expr"],
+    	["fnsiglit", :expr, "\\ ident ( ) -> expr"],
+    	["fnsiglit", :expr, "\\ ( falst ) -> expr"],
+    	["fnsiglit", :expr, "\\ ident ( falst ) -> expr"],
+    	["fnsiglit", :expr, "\\ ( ) stmts"],
+    	["fnsiglit", :expr, "\\ ident ( ) stmts"],
+    	["fnsiglit", :expr, "\\ ( ) -> expr stmts"],
+    	["fnsiglit", :expr, "\\ ident ( ) -> expr stmts"],
+    	["fnsiglit", :expr, "\\ ( falst ) stmts"],
+    	["fnsiglit", :expr, "\\ ident ( falst ) stmts"],
+    	["fnsiglit", :expr, "\\ ( falst ) -> expr stmts"],
+    	["fnsiglit", :expr, "\\ ident ( falst ) -> expr stmts"],
+    	["fndeclSep", :general, ":"],
+    	["fndeclSep", :general, "::"],
+        ["givenstmt", :stmt, "given ( falst ) stmt"],
+    	["stmtlist", :general, "stmt"],
+    	["stmtlist", :general, "stmt ;"],
+    	["stmtlist", :general, "stmt ; stmtlist*"],
+    	["arrowstmt", :stmt, "expr => expr"],       // this is for => in chainops, whose body is a stmtlist
+    	["stmts", :stmt, "{ }"],
+    	["stmts", :stmt, "{ stmtlist* }"],
+    	["decl", :general, "identlist : expr"],
+    	["decl", :general, "ident = expr"],
+    	["decllist", :general, "decl"],
+    	["decllist", :general, "decl , decllist*"],
+    	["valstmt", :stmt, "val decllist*"],
+    	["varstmt", :stmt, "var decllist*"],
+    	["loopstmt", :stmt, "loop stmt"],
+    	["whilestmt", :stmt, "while ( expr ) stmt"],
+    	["clause", :general, "expr => stmt"],
+    	["clause", :general, "else => stmt"],
+    	["clauselist", :general, "clause"],
+    	["clauselist", :general, "clause ; clauselist*"],
+    	["typecase", :expr, "case expr { clauselist }"],
+    	["caseexpr", :expr, "case { clauselist }"],
+    	["contstmt", :stmt, "continue"],
+    	["brkstmt", :stmt, "break"],
+    	["retstmt", :stmt, "return"],
+    	["retstmt", :stmt, "return expr"],
+    	["eachstmt", :stmt, "each ( exprlist ) stmt"],
+    	["mapexpr", :expr, "map ( exprlist ) stmt"],
+    	["extendexpr", :expr, "extend expr where stmts"],
+    	["assertstmt", :stmt, "assert expr"],
+    	["methodstmt", :stmt, "method ident : expr"],       // note: since = is an expr operator, this includes "method id : typ = fnlit"
+    	["methodstmt", :stmt, "method ident = fnsiglit"],
+    	["pvtmethodstmt", :stmt, "private method ident : expr"],
+    	["pvtmethodstmt", :stmt, "private method ident = fnsiglit"],
+    	["attribstmt", :stmt, "attribute ident : expr"],
+    	["pvtattribstmt", :stmt, "private attribute ident : expr"],
+    	["importstmt", :stmt, "import strg"],
+    	["importstmt", :stmt, "import strg as ident"],
+    	["importstmt", :stmt, "import strg melted"],
+    	["importpkgstmt", :stmt, "import go strg"],
+    	["importpkgstmt", :stmt, "import go strg as ident"],
+    	["importpkgstmt", :stmt, "import go strg melted"],
+    	["exportstmt", :stmt, "export identlist"],
+    	["oncond", :stmt, "oncondition expr stmts"],
+    	["dimensionstmt", :stmt, "dimension ident ident"],
+]
+
+// Function for tokenCheck: fix "x:y" so it tokenizes as "x", ":", "y" instead of "x", ":y".
+// Assign this to the tokenCheck attribute of a parseState entity using d8mDefn.
+val fixD8mLabels = \mod(ps:parseState) {
+    val ofs = ps.cxt.ofs
+    if(ps.cxt.toktype == "label" && ofs > 0 && bytes.alphanum(ps.bytes[ofs-1])) {
+        ps.cxt.toktype = "opr"
+        ps.cxt.ofs -= (ps.cxt.tknval.count - 1)
+        ps.cxt.tknval = ":"
+    }
+}
+
+val d8mDefn = [langDefn: d8mOperators, rawprodnsD8m, [tclassLabel, tclassQuoted], d8mKeywords, d8mBrackets, d8mComments, d8mSeparators, true]

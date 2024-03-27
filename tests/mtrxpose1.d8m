@@ -1,0 +1,14 @@
+// test transpose code in matrix module
+
+import "matrix" as mtx
+import go "math/rand"
+val foo = \() {
+    val randx = rand.New(rand.NewSource(1))
+    val strgs = ["aa", "bb", "cc", "dd", "ee", "ff", "gg", "hh", "ii", "jj"]
+    val row = \(n:integer) { (1..n).{ strgs[randx.Intn(40) % 10] } }
+    val mtx1 = (1..7).{ row(10) }
+    val tr1 = mtx.transpose(mtx1)
+    println(mtx1)
+    println(tr1)
+}
+foo()

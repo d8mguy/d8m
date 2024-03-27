@@ -1,0 +1,8 @@
+// condopsXfm1
+val condops = \(lst: list(integer), kk: integer) {
+    if(lst[0] < kk && sigma(lst.[index < 5]) < 5*kk) println("first test passed")
+    if(lst[1] > kk && max(lst.[index < 7], -100) > 5*kk && lst[2] > kk && lst[3] == kk) println("second test passed")
+    if(lst[1] < kk && lst[4] < kk && max(lst.[index < 7], -100) > 5*kk && lst[3] == kk) println("third test passed")
+    if(lst[1] > kk || lst[4] < kk || max(lst.[index < 7], -100) > 5*kk || lst[3] == kk) println("fourth test passed")
+}
+condops([1,5,2,7,3,12,4,15], 18)

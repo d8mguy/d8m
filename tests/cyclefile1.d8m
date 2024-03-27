@@ -1,0 +1,15 @@
+// cyclefile1
+import "file"
+val tryfile = \imp() {
+    var bfile = file.createBasic("testdata/testfile1.txt")
+    each(i^1..3) bfile.write("testing 123\n")
+    bfile.close()
+    var bf2 = file.openBasic("testdata/testfile1.txt")
+    val buff : list(byte) = zerolist(40)
+    val cnt = bf2.read(buff)
+    if(cnt < 0) exit("read failed")
+    println(cvt(select(buff, 0, cnt), string))
+    bf2.close()
+    file.fileDelete("testdata/testfile1.txt")
+}
+tryfile()

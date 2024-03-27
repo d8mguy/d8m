@@ -1,0 +1,10 @@
+// test of strings pkg
+val strgpkgTest = \imp(xx : integer, yy : float) {
+    import go "strings"
+    var bldr : strings.Builder
+    bldr.WriteString("xxx yyy zzz")
+    fmt.Fprintf(bldr, "; %6.3f; %d; ", yy, xx)
+    bldr.WriteString("aaa bbb ccc")
+    bldr.String()
+}
+strgpkgTest(3498, 55.37402)

@@ -1,0 +1,10 @@
+// xpeach: testing a different use of xp function
+val xxx = [1,3,-2,4]
+val yyy = [4,5,3,3]
+val cetup = tuple(c, e:list(integer))
+val foo = \imp(a, b: list(integer)) {
+    var rslt = 0
+    each(x^xp([cetup: a, b])) rslt += x.c*x.e
+    rslt
+}
+foo(xxx, yyy)

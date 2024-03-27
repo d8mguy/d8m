@@ -1,0 +1,11 @@
+// filt1xtest
+// At time of adding it, this test shows an oppty to improve vbl merging in optimzn.
+val stateT = tuple(x : integer, deleted : list(string))
+val state = [stateT: 12, ["34iu", "ekrj"]]
+val foo = \(restoreClicked : string) {
+    if(restoreClicked != "") {
+        val inx = always(x~state.deleted[this == restoreClicked => index], x!=nil)
+        inx
+    } else 12
+}
+foo("krj")

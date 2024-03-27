@@ -1,0 +1,10 @@
+import "regexp"
+val tryRE = \(strg1, strg2: string) {
+    val re1 = [regexp.regexpT: "[ \t]*[a-zA-Z]+;\*\*[0-9]+"]
+    println(re1.findAllIndices(strg1))
+    println(re1.findAllIndices(strg2))
+    val re2 = [regexp.regexpT: "[a-zA-Z_]+;\*\*[0-5]+"]
+    println(re2.findAllIndices(strg1))
+    println(re2.findAllIndices(strg2))
+}
+tryRE(" eiu;**388 ieu*; SS;**8;xxxd", "e_iu;**388 ieu*; S(S;**8;xxxd")

@@ -1,0 +1,7 @@
+// test a string to ELT converter that puts error into the ELT
+val wgBaseTypes = label(:integer, :float, :string, :boolean, :label, :submitter, :any, :error)
+val string2WGBase = \(s:string) -> wgBaseTypes {   // string to ELT translation fn
+    val inx = ["integer", "float", "string", "boolean", "label", "submitter", "any"][this == s => index]
+    if(inx == nil) :error else cast(inx, wgBaseTypes)
+}
+string2WGBase("label")

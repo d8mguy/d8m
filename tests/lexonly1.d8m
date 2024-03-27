@@ -1,0 +1,22 @@
+// scan only lexparse usage
+import "lexparse" melted
+val foo = \imp() {
+    val seps = [",", ";", "^", "~"]
+    val cmnts = ["/*", "*/", "//", "\n"]
+    val brkts = ["{", "}", "(", ")", "[", "]"]
+    val lxr = [lexerT: brkts, cmnts, seps, []]
+    val test1 = `
+    val df1 = xxx - :yyy, df2 : tuple(x: y, z: w) = [1, 5]
+    while(df1) {
+        var tst = ff(yy)
+        if(ekrj) break
+    }
+    welkrj
+    `
+    var cxt = [parseCxt: 0, 0, 0, "", ""]
+    while(cxt.toktype != "end") {
+        cxt.getToken(test1, lxr)
+        println(cxt.ofs, cxt.tknval, cxt.toktype)
+    }
+}
+foo()

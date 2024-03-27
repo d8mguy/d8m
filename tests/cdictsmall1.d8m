@@ -1,0 +1,12 @@
+// testing cdictSmallint
+import "cdict" melted
+import go "math/rand"
+val foo = \imp() {
+    val randx = rand.New(rand.NewSource(1))
+    var cd0 = [cdictSmallint:]
+    val cnt1 = randx.Intn(12) + 5
+    cd0.add(2)
+    each(x^1..cnt1) cd0.add(5)
+    cd0
+}
+foo()

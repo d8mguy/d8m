@@ -1,0 +1,25 @@
+
+// xprodlt: testing a nonstandard $< method
+// This triggered a rewrite rule bug so it's in the test suite
+val tknclasses = ["ident", "int"]
+val testT = extend tuple(tkn: string, xxx: integer) where {
+    method $< = \(other: testT) {
+        val stkn = self.tkn, otkn = other.tkn
+        val seS = (stkn == "stmt" || stkn == "expr"), seO = (otkn == "stmt" || otkn == "expr")
+        if(seO) !seS
+        else {
+            val tclsS = stkn in tknclasses, tclsO = otkn in tknclasses
+            if(tclsO) !(seS || tclsS)
+            else false
+        }
+    }
+    method $<= = \(other: testT) {
+        self < other || self == other
+    }
+}
+val ttoptionStrgs = ["ccc", "ddd", "int", "ident", "expr", "stmt"]
+val foo = \() {
+    val ttoptions = ttoptionStrgs.{ [testT: this, index ] }
+    each(opt1^ttoptions, opt2^ttoptions) println("#{opt1.tkn}, #{opt2.tkn}: #{opt1 < opt2}")
+}
+foo()

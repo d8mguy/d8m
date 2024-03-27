@@ -1,0 +1,150 @@
+// Rudimentary d8m level support for files via os pkg.
+// Defines basicfile and streamfile
+
+/*
+ * assume from os pkg:
+ * val File: type = struct {}
+ * val FileInfo: type = interface { Size:\()->int64 }
+ * Open:\(string)->tuple(ok: File, err: Goerror)
+ * Stat:\(File)->tuple(ok: FileInfo, err: Goerror)
+ * Read:\(File, list(byte))->tuple(ok: integer, err: Goerror)
+ * where Goerror is nilPossible(string)
+ */
+
+export basicfile, streamfile, openStream, openBasic, createBasic, openWithError, createWithError, fileDelete, quickCheck,
+    modtime, earlier, filenameParts
+
+import go "os"
+
+
+val basicfile: type = extend tuple(name: string, fd: os.File) where {
+	method read = \mod(buff: list(byte)) -> integer {
+		val rdrslt = fd.Read(buff)
+		if(rdrslt.err != nil) -1 else rdrslt.ok
+	}
+	method write = \mod(buff: list(byte)) -> nothing {
+		val wrtrslt = fd.Write(buff)
+		if(wrtrslt.err != nil) exit(wrtrslt.err)
+	}
+	method close = \() -> nothing { fd.Close() }
+	method size = \() -> integer {
+	    val finfo = fd.Stat()
+	    if(finfo.err != nil) exit("can't Stat " + name)
+	    cvt(finfo.ok.Size(), integer)
+	}
+	method modtime = \() {
+	    val statval = fd.Stat()
+        if(statval.err != nil) exit(statval.err)
+        statval.ok.ModTime()
+	}
+}
+
+// Streamfile is a slight optimization of basicfile; it reads and closes the file upon opening.
+val streamfile: type = tuple(name, contents: list(byte))
+assert connected(basicfile)
+assert connected(streamfile)
+
+// OpenStream takes a filename string and attempts to open it. Exit if not successful, otherwise read and close the
+// file, returning a streamfile.
+val openStream = \(nm: string)->streamfile {
+	val osopen = os.Open(nm)
+	if(osopen.err != nil) exit(osopen.err)
+	val fs = osopen.ok.Stat()
+	if(fs.err != nil) exit(fs.err)
+	val len = fs.ok.Size()
+	val buff: list(byte) = zerolist(len)
+	val contents = osopen.ok.Read(buff)
+	if(contents.err != nil) exit(contents.err)
+	osopen.ok.Close()
+	[streamfile: nm, buff]
+}
+
+// OpenBasic takes a filename string and attempts to open it, returning a basicfile if successful and exiting otherwise.
+val openBasic = \(nm: string)->basicfile {
+	val osopen = os.Open(nm)
+	if(osopen.err != nil) exit(osopen.err)
+	[nm, osopen.ok]
+}
+
+// CreateBasic creates a basicfile with the given name, returning the basicfile if
+// successful and exiting otherwise.
+val createBasic = \imp(nm: string)->basicfile {
+	var oscre = os.Create(nm)
+	if(oscre.err != nil) exit(oscre.err)
+	[nm, oscre.ok]
+}
+
+// OpenWithError takes a filename string and returns either a basicfile for it or an error message string.
+val openWithError = \(nm: string)->ortype(ok: basicfile, err: string) {
+	val osopen = os.Open(nm)
+	if(osopen.err != nil) return "can't open " + nm
+	[basicfile: nm, osopen.ok]
+}
+
+// CreateWithError takes a filename string and returns either a basicfile for createing it or an error message string.
+val createWithError = \(nm: string)->ortype(ok: basicfile, err: string) {
+	val oscre = os.Create(nm)
+	if(oscre.err != nil) return "can't create " + nm
+	[basicfile: nm, oscre.ok]
+}
+
+// FileDelete takes a filename string and deletes it; exiting with the error message if there is an error.
+val fileDelete = \imp(fname: string) -> nothing {
+    val err = os.Remove(fname)
+    if(err != nil) exit(err)
+}
+
+// QuickCheck takes a filename string and Stats it; returning -1 if it doesn't exist, 0 if it's a regular file, 1 if a directory
+val quickCheck = \imp(fname: string) -> integer {
+    var status = os.Stat(fname)
+    if(status.err != nil) -1 else if(status.ok.IsDir()) 1 else 0
+}
+
+// Modtime extracts the ModTime of a DirEntry, panicing if the Info call fails.
+val modtime = \(de: os.DirEntry) {
+    val inf = de.Info()
+    if(inf.err != nil) exit(inf.err)
+    inf.ok.ModTime()
+}
+
+// Given two os.DirEntry, return whether the first is earlier than the second
+val earlier = \(d0, d1: os.DirEntry) -> boolean {
+    val mt0 = d0.modtime()
+    val mt1 = d1.modtime()
+    val diff = mt0.Sub(mt1)
+    diff < 0
+}
+
+// FilenameParts handles a list(byte) representing a filename as a triple of the directory, base name, extension
+val filenameParts = extend tuple(dir, base, extn: list(byte)) where {
+    method lithook = \mod(nm: list(byte)) {
+        // split at index of last slash in nm and last dot in nm
+        val sinx0 = reverse(nm)[this == '/' => index]
+        val sinx = (sinx0 == nil ? -1 : nm.count - sinx0)
+        val dinx0 = reverse(nm)[this == '.' => index]
+        var dinx = (dinx0 == nil ? -1 : nm.count - dinx0)
+        var pathpart = [list(byte):], basepart = [list(byte):], xpart = [list(byte):]
+        if(sinx < 0) {
+            if(dinx < 0) basepart = nm else { basepart = nm[0...dinx-1]; xpart = nm[dinx...nm.count] }
+        } else if(dinx < 0) { pathpart = nm[0...sinx-1]; basepart = nm[sinx...nm.count]
+        } else { pathpart = nm[0...sinx-1]; basepart = nm[sinx...dinx-1]; xpart = nm[dinx...nm.count] }
+        dir = pathpart
+        base = basepart
+        extn = xpart
+    }
+    method out = \imp() -> string {
+        var nbytes = dir.count + base.count + extn.count
+        if(dir.count > 0) nbytes += 1
+        if(extn.count > 0) nbytes += 1
+        var rslt: list(byte) = zerolist(nbytes)
+        copyFrom(rslt, 0, dir)
+        var ofs = dir.count
+        if(dir.count > 0) { rslt[ofs] = '/'; ofs += 1 }
+        copyFrom(rslt, ofs, base)
+        ofs += base.count
+        if(extn.count > 0) { rslt[ofs] = '.'; ofs += 1 }
+        copyFrom(rslt, ofs, extn)
+        cvt(rslt, string)
+    }
+}
+

@@ -1,0 +1,124 @@
+
+// Defines `baseStreamer` and friends to provide basic support for codecs like json and others.
+
+export baseStreamer, setAttribute, attributeNames, attributeValue, appendElement
+
+import "strings"
+
+val appendElement:\mod(list, entity)->nothing
+val setAttribute:\mod(tuple, string, entity)->boolean
+val attributeNames:\(tuple)->list(label)
+val attributeValue:\(tuple, label)->entity
+
+given(TT::tuple) {
+    val anameRW = \xprftn() {
+        val tv: TT
+        matchquery("attributeNames(tv)")
+        skipIf(!manifest(type(tv)))
+        type(tv).attributes.{this.ident}
+    }
+    val avalRW = \xprftn() {
+        val tv: TT, lbl: label
+        matchquery("attributeValue(tv, lbl)")
+        skipIf(!manifest(lbl))
+        val inx = type(tv).attributes[this.ident == lbl => index]
+        if(inx == nil) false else if(manifest(tv)) tv.args[inx] else mkterm(:symchain, tv, lbl)
+    }
+    val setattrRW = \xprftn() {
+        val tv: TT, lbl: string, ent: xprterm
+        matchquery("setAttribute(tv, lbl, ent)")
+        skipIf(!manifest(type(tv)))
+        val clauses0 = type(tv).attributes.{
+            mkterm(:arrow, mkterm(:eq, lbl, this.ident),
+                mkstmts([mkterm(:asgn, mkterm(:symchain, tv, this), mkterm(:gdref, ent, type(this))), true]))
+        }
+        mkterm(:ifcase, clauses0 + [mkterm(:arrow, true, false)])
+    }
+}
+rewrite(anameRW)
+rewrite(avalRW)
+rewrite(setattrRW)
+
+given(LT::list) {
+    val appeltRW = \xprftn() {
+        val lst: LT, ent: xprterm
+        matchquery("appendElement(lst, ent)")
+        skipIf(!manifest(type(lst)))
+        mkterm(:funcall, methodNamed(type(lst), :pushb), [lst, typedAs(ent, elttype(type(lst)))])
+    }
+}
+rewrite(appeltRW)
+
+
+// A local type to store message and position, and help create error messages
+val errInfo = extend tuple(msg: string, posn: integer) where {
+    method fmt = \() { "\t#{msg} at position #{posn}" }
+}
+
+// `BaseStreamer` holds the stream we're encoding or decoding, plus error information.
+// It has some basic methods for reading and writing strings in this context.
+// It's intended to be extended for any given specific form of codec.
+val baseStreamer = extend tuple(content: list(byte), index, errcount: integer, errorList: list(errInfo)) where {
+    // produces the current content as a string, after the `toX` method of a codec has generated it.
+    method out = \() -> string { cvt(content[0...index], string) }
+
+    method lithook = \mod(lb: list(byte)) { content = lb; index = 0; errcount = 0; errorList = zerolist(4) }
+    // clears errors and resets index to the beginning of content.
+    method reset = \mod() { index = 0; errcount = 0 }
+
+    // records an error.
+    method error = \mod(errmsg: string) -> nothing {
+        errorList[cvt(and(errcount, 3), integer)] = [errInfo: errmsg, index]
+        errcount += 1
+    }
+    assert noInline(error)
+
+    // produces an error message from previously noted errors; "" if no errors
+    method errors = \() -> string {
+        if(errcount == 0) ""
+        else if(errcount < 5) {
+            "#{errcount} errors: \n" + strings.join(errorList[0...errcount].{ fmt(this) }, "\n")
+        } else {
+            val brk4 = cvt(and(errcount, 3), integer)
+            "#{errcount} errors, last 4 are: \n" +
+                strings.join(errorList[0...brk4].{fmt(this)}, "\n") +
+                strings.join(errorList[brk4...4].{fmt(this)}, "\n")
+        }
+    }
+
+    // returns the next byte of content
+    method cur = \() { index < content.count ? content[index] : 0 }
+
+    // returns the value of cur before incrementing index
+    method next = \mod() { val ret = cur(); if(index < content.count) index += 1; ret }
+
+    // skips whitespace
+    method whitespace = \mod() { while(cur() == ' ' || cur() == '\t' || cur() == '\n' || cur() == '\r') index += 1 }
+    assert noInline(whitespace)
+    // skips content through sought (returns at EOF or just past sought)
+    method skipThrough = \mod(sought: byte) { loop { if(next() == sought || index >= content.count) break } }
+    // checks for an optional string by skipping whitespace then checking for a match, skipping past it if present
+    method optional = \mod(s: string) -> boolean {
+        whitespace()
+        val ret = index+s.count <= content.count && s == content[index...index+s.count]
+        if(ret) index += s.count
+        ret
+    }
+    assert noInline(optional)
+    // skips whitespace then verifies that byte b is next, setting an error if not
+    method expect = \mod(b: byte) -> nothing {
+        whitespace()
+        if(cur() != b) error(bb.toLiteral(b) + " expected")
+        index += 1
+    }
+    assert noInline(expect)
+    // Method add just blindly copies bytes
+    method add = \mod(strg: string) { content.insert(index, strg); index += strg.count }
+
+    // Method addbytes also just blindly copies bytes
+    method addbytes = \mod(bytes: list(byte)) { content.insert(index, bytes); index += bytes.count }
+
+    // Method delete removes the last k bytes from the output
+    method delete = \mod(k: integer) { index -= k }
+}
+

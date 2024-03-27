@@ -1,0 +1,152 @@
+
+// longer than most tests, this is a fragment from generating projections on hypercubes for charting.
+import "combics"
+import "olist" melted
+import go "strings"
+
+
+val langNames = ["d8m", "go", "python", "ruby", "javascript", "c#", "java", "lua", "c++", "rust"];
+
+// Parameter is used in a few ways. They live in the Metafile of each perfspec as descrns of the "normal" dimensions.
+// ALso, server sends them after select to help define a chart. (And client sends back assignments to them.)
+val Parameter = tuple(ident:string, explanation:string, elements:list(string))
+val Output = tuple(ident: string, explanation: string, unit: string)
+
+// Used in both client & server, this is the json decode of the meta.info file for a given perfspec working dir
+val Metafile = tuple(ident, descrn: string, params: list(Parameter), outputs: list(Output),
+	substns: list(Parameter), language: list(integer), spec: list(string), runtime: list(string), compiler: list(string))
+
+
+val filedataT = tuple(rowcols: list(list(string)), filename: string)
+val datafilesT = olist(filedataT, string, \(x:filedataT) { x.filename })
+val vertexT = tuple(row, col: integer, data: filedataT)
+// The list(cubeDim) in a canonicalCube always has the order [abscissa, multi, click]; the latter 2 can be omitted.
+// The affectsRow slot can only be true for an abscissa.
+val cubeDim = tuple(nElts:integer, offset: integer, affectsRow:boolean)
+val canonicalCubeT = extend tuple(xvalues: list(string), absInx: integer, vertices:list(vertexT)) where {
+    // generate the json form of a row for the chart embodied in self's vertices setup, given x info.
+    method generateCols = \imp(xvalue: string, row0:integer) -> string {
+        var rslt = [`{"x":"` + xvalue + `"`] + vertices.{ "\"y#{index}\":\"" + data.rowcols[row0+this.row][this.col] + `"` }
+        strings.Join(rslt, ",") + "}"
+    }
+    method generateRows = \imp() {
+        val rowValues = xvalues.{ generateCols(this, index) }
+        "[" + strings.Join(rowValues, ",") + "]"
+    }
+}
+
+// Given an allDimsIndices, return the basename of its filename
+val allDims2Filename = \(adi: list(integer), nParams, nSubstns: integer) {
+    val substns = cvt((0...nSubstns).{ val incr:byte = max(adi[nParams+this], 0) cvt('a'+ incr, byte) }, string)
+    val bicds = strings.Join(adi[adi.count-5...adi.count-1].{ "#{this <= 0 ? 0 : this}"}, "_")
+    "LM"+substns+bicds
+}
+
+// Given an index in the allDims of this metafile, access the right slot to get #elts
+// Note that this doesn't handle repeats and assumes it won't be called.
+val metafileIndex2Elts = \(mf: Metafile, index: integer) {
+    val nParams = mf.params.count, nSubstns = mf.substns.count
+    val nDims = nParams + nSubstns + 5
+    if(index < nParams) mf.params[index].elements
+    else if(index < nParams + nSubstns) mf.substns[index - nParams].elements
+    else if(index == nDims - 5) mf.language.{ langNames[this] }
+    else if(index == nDims - 4) mf.spec
+    else if(index == nDims - 3) mf.runtime
+    else mf.compiler
+}
+
+// Note that by construction (see doSelect) the order of allDims is (1) normal params; (2) substns; (3) BICDs in fixed order.
+val selectedT = tuple(activePS: Metafile)
+val stateAttribs = tuple(
+    sel: selectedT,                  // info about the selected perfspec
+    filedata: datafilesT            // this is the cache of filedata
+)
+val runstateT = extend stateAttribs where {
+
+    // retrieve a filedataT from the cache; if not present, create and cache by reading in the file
+    method getFiledata = \mod(filename: string, nrows, ncols: integer) -> filedataT {
+        var cacheInx = filedata.index(filename)
+        if(cacheInx < 0 || filedata[cacheInx].filename != filename) {
+            // the real code will open and read a file; here, take the expectations & synth approp strgs
+            var lines:list(list(string)) = []
+            each(r^0...nrows) {
+                val row = (0...ncols).{ "[#{r},#{this}]"+filename }
+                lines.pushb(row)
+            }
+            filedata.insert([filedataT: lines, filename])
+            cacheInx = filedata.index(filename)
+        }
+        filedata[cacheInx]
+    }
+
+    // Given the spec from client for a chart, generate the canonicalCube we use to read and format the data
+    // Use (and fill in) the filedata cache as possible/needed.
+    // For now, this can't handle dual axis, outs refers to the left axis, will need to add an arg (and more hair) later.
+    method constructCube = \mod(allDimsIndices, outs: list(integer)) -> canonicalCubeT {
+        var verts: list(vertexT) = []
+        val absInx = always(x~allDimsIndices.index(-1), x!=nil)
+        val multiInx = allDimsIndices.index(-3)
+        val clickInx = allDimsIndices.index(-2)
+        val nParams = sel.activePS.params.count
+        val nSubstns = sel.activePS.substns.count
+        var xstrgs: list(string) = []
+        var absCount = 0
+        // allDimsIndices.count = nParams+nSubstns+5
+        // form a list of pairs of integers: elt count, index in allDims
+        var filecubePairs: list(list(integer)) = []
+        val absElts = metafileIndex2Elts(sel.activePS, absInx)
+        var multiElts, clickElts: list(string)
+        if(absInx >= nParams) filecubePairs.pushb([absElts.count, absInx])
+        if(multiInx != nil && multiInx >= nParams) {
+            multiElts = metafileIndex2Elts(sel.activePS, multiInx)
+            filecubePairs.pushb([multiElts.count, multiInx])
+        }
+        if(clickInx != nil && clickInx >= nParams) {
+            clickElts = metafileIndex2Elts(sel.activePS, clickInx)
+            filecubePairs.pushb([clickElts.count, clickInx])
+        }
+        var fcstrm = [combics.streamIndices: filecubePairs.{this[0]}]
+        // Now I'm ready to generate the filenames, collect the data with caching, assemble it into a proto cube
+        var filenames: list(string) = []      // we'll build up this list by enumerating dimensions that involve diff files
+        while(!fcstrm.done) {
+            val nxfile:list(integer) = fcstrm.next    // nxfile.count == filecubePairs.count
+            var adi0 = copy(allDimsIndices)
+            each(x^xp([inx~nxfile, fcpair~filecubePairs])) {
+                // fcpair[1] is the index in allDimsIndices of this dim; inx is the current value we want to put there
+                adi0[x.fcpair[1]] = x.inx
+            }
+            filenames.pushb(allDims2Filename(adi0, nParams, nSubstns))
+        }
+        // At this point, filenames is a filled out cube wrt filename changes, of the full cube minus any repeated outputs
+        // Use the caching scheme to fill in the desired canonicalCube from this.
+        var vertices: list(vertexT) = []
+        val nOuts = sel.activePS.outputs.count
+        each(fnm^filenames) {
+            each(outInx^outs) vertices.pushb([vertexT: 0, nParams + outInx, getFiledata(fnm, absElts.count, nParams + nOuts)])
+        }
+        [canonicalCubeT: absElts, 0, vertices]
+    }
+}
+
+// mf1 has 1+1+5 params total and 4 outputs
+val mf1 = [Metafile: "mf1", "mf1 desc", [[Parameter: "prm1", "", ["p11.0","p11.1","p11.2","p11.3"]]],
+            [[Output: "out1.1", "", "u"], [Output: "out1.2", "", "u"], [Output: "out1.3", "", "u"], [Output: "out1.4", "", "u"]],
+            [[Parameter: "subst11", "", ["s1v1", "s1v2", "s1v3", "s1v4"]]],
+            [], ["spec11", "spec12", "spec13", "spec14", "spec15"], [], []]
+// mf2 has 2+2+5 params total and 2 outputs
+val mf2 = [Metafile: "mf2", "mf2 desc",
+              [[Parameter: "prm2a", "", ["p21.0","p21.1","p21.2","p21.3", "p21.4"]], [Parameter: "prm2b", "", ["p22.0","p22.1","p22.2","p22.3"]]],
+              [[Output: "out2.1", "", "u"], [Output: "out2.2", "", "u"]],
+              [[Parameter: "subst21", "", ["s2v1", "s2v2", "s2v3"]], [Parameter: "subst22", "", ["s2bv1", "s2bv2", "s2bv3", "s2bv4"]]],
+              [], ["spec21", "spec22", "spec23", "spec24", "spec25", "spec26", "spec27"], [], []]
+
+val foo = \imp() {
+    var rs1 = [runstateT: [selectedT: mf1], []]
+    println(rs1.constructCube([-1, -2, 0, 1, 0, 0, 0], [2]).generateRows())
+    println(rs1.constructCube([-1, 2, 0, -2, 0, 0, 0], [2]).generateRows())
+    println(rs1.constructCube([-1, -3, 0, -2, 0, 0, 0], [2]).generateRows())
+    var rs2 = [runstateT: [selectedT: mf2], []]
+    println(rs2.constructCube([-1, 0, -2, 0, 0, 1, 0, 0, 0], [0,1]).generateRows())
+    println(rs2.constructCube([-2, 0, -1, 0, 0, 1, 0, 0, 0], [0,1]).generateRows())
+}
+foo()

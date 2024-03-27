@@ -1,0 +1,7 @@
+// test a string to ELT converter with nilpossible for error
+val wgBaseTypes = label(:integer, :float, :string, :boolean, :label, :submitter, :any)
+val string2WGBase = \(s:string) -> nilPossible(wgBaseTypes) {   // string to ELT translation fn
+    ["integer", "float", "string", "boolean", "label", "submitter", "any"][this == s => cast(index, wgBaseTypes)]
+}
+val foo = \() { val xx = string2WGBase("label"); xx == nil ? "nil" : stringify(xx) }
+foo()

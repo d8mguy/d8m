@@ -1,0 +1,16 @@
+import "splay" melted
+val ispT = splaytree(integer)
+var ast = [ispT: 1, 6, 2, 18, 33, 7]
+val trysplay = \mod(st : ispT) {
+	var answers : list(boolean) = []
+	answers.pushb(st.insert(15))		// true
+	answers.pushb(st.insert(25))		// true
+	answers.pushb(st.insert(25))		// false
+	answers.pushb(st.present(25))	    // true
+	answers.pushb(st.delete(25))		// true
+	answers.pushb(st.present(25))   	// false
+	answers.pushb(st.delete(6))			// true
+	answers.pushb(st.present(6))		// false
+	answers
+}
+[a~trysplay(ast), b~ast.{this}]

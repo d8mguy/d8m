@@ -1,0 +1,60 @@
+// A countingdict maps T-->integer, representing a collection of T with the multiplicity of each element.
+// This module also defines a STMap from countingdict to go's map type.
+
+val countingdict = \typegen(T::entity) {
+	val pairT = tuple(key: T, count: integer)
+	extend tuple(private x: list(pairT)) where {
+		assert enumerable(x)
+		method add = \mod(k: T) {
+			val inx = x[this.key == k => index]
+			if(inx == nil) x.pushb([pairT: k, 1])
+			else x[inx].count += 1
+		}
+		method count = \() { x.count }
+		method lithook = \mod(xx: list(T)) { each(x^xx) add(x) }
+		method eltcount = \(v: T) { val inx = x[this.key == v => index]; inx == nil ? 0 : x[inx].count }
+		method keys = \() { x.{key} }
+		method counts = \() { x.{count} }
+	}
+}
+given(T0::entity, aT0: T0) {
+	STMap {
+		source = countingdict(T0)
+		target = Gomap(T0, integer)
+		self.add(aT0) => self.lvalindex(aT0, rvalindexWD(self, aT0, 0) + 1)
+		self.eltcount(aT0) => self.rvalindexWD(aT0, 0)
+		//keys(self) => keys(self)
+		enumerable(self) => self.{[key~key, count~value]}
+	}
+}
+
+// An implementation of countingdict, only suitable for non-negative small integers but very efficient for those.
+// Use as is, or create an stmapping for it. It allocate a list(integer) for each index in the range, starting from 0.
+// The eltcount operation is O(1) but count must search the range.
+val cdictSmallint = extend tuple(private x:list(integer)) where {
+    method add = \mod(key: integer) {
+        if(x.count <= key) { val tmp: list(integer) = zerolist(1 + key - x.count); x += tmp }
+        x[key] += 1
+    }
+    method lithook = \mod(lst: list(integer)) { each(elt^lst) add(elt) }
+    method count = \() { x.[this != 0].count }
+    method eltcount = \(v: integer) { x.count <= v ? 0 : x[v] }
+    method keys = \() { x.[this > 0 => index] }
+    method counts = \() { x.[this > 0 => this] }
+}
+
+export countingdict, cdictSmallint
+
+
+/******
+val cdi = countingdict(integer)
+import go "math/rand"
+val fill = \mod(xx: cdi, n: integer) {
+	val mx = n/3
+	each(i^1..n) xx.add(rand.Intn(mx))
+	xx
+}
+val filled = fill(cast([], cdi), 50)
+//rewrite(Gomap(integer, integer), filled)
+//println("count sum=", sigma(filled.{count}), "; filled=", filled)
+********/

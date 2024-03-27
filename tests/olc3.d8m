@@ -1,0 +1,48 @@
+// This test was derived from a timing test that's more rigorous; it uncovered several subtle problems with list2official
+// in olistCached.
+
+import "olistCached" melted
+import "lcg" melted
+
+// Make elements for oltype that depend on only one random vbl -- b and c attribs are derived
+val olElt = tuple(a: integer, b: string, c: float)
+val randomStrings = ["ekrj", "rs2 rs2", "ij3lkj i3", "xx kj yy 4", "iu 3o4i 55", "lkj iud wlkj 66"]
+val make1 = \(aa:integer) { [olElt: aa, randomStrings[aa % 6], 0.5 * aa] }
+
+val oltype = olistCached(olElt, \(x:olElt){x.a}, 921); val doFlush = \mod(ol:oltype) { ol.flush() }
+
+val loadModel = \imp() {
+    var olst: oltype = []
+    val listSize = 20000
+    var seqgen = [LinCong: 10]
+    var insTime = 0, rmvTime = 0, accum = 0
+    // Now time insertions: odd elts of LCG, even elts excluded. No repeat so can generate known included and excluded
+    each(outer^0...listSize/100) {
+        each(i^1..100) { seqgen.next; olst.insert(make1(seqgen.next)) }
+    }
+    seqgen.curval = 10          // regenerate the same seq again
+    // Time for some lookups.
+    var matchcount = 0
+    doFlush(olst)
+    // do lookup loop 10x to get good avg
+    each(ii^1..10) {
+        each(i^0...listSize) {
+            if(i % 2 == 0) {
+                seqgen.next
+                if(make1(seqgen.next) in olst) matchcount += 1
+            } else {
+                unless(make1(seqgen.next) in olst) matchcount += 1
+                seqgen.next
+            }
+        }
+        unless(matchcount == listSize) println("matchcount was", matchcount)
+        matchcount = 0
+        seqgen.curval = 10          // regenerate the same seq.
+    }
+    // now remove items
+    each(outer^0...listSize/100) {
+        each(i^1..100) { seqgen.next; olst.remove(make1(seqgen.next)) }
+    }
+    unless(olst.count == 0) println("olst count was", olst.count)
+}
+loadModel()

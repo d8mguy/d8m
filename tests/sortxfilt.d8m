@@ -1,0 +1,25 @@
+// sortxfilt
+import "sort" melted
+given(T0 :: entity, OT :: ordered) {
+    val extractAndSort = \xprftn() {
+          val biglist: list(T0), fn:\(T0,T0)->boolean, K : integer
+          matchquery("sort(biglist, fn).[index < K]")
+          skipIf(family(T0) != :tuple || attributes(T0).count <= 2)
+          val A = fn.fmlargs[0], B = fn.fmlargs[1], AT : xprsym
+          val relop : xprsym = matching([:<, :<=, :>, :>=].{ methodNamed(OT, this) }, false, false)
+          val fnPtn = pattern(mkterm(:funcall, relop, [mkterm(:symchain, A, AT), mkterm(:symchain, B, AT)]))
+          skipIf(fn.defn.stmts.count != 1 || !match(fnPtn, fn.defn.stmts[0]))
+          val XT = mktype(:tuple, [AT, mksym(:inx, integer)])
+          val xfnargs = fn.fmlargs.{ mksym(this.ident, XT) }
+          val xfnbody = fn.defn.subst(fn.fmlargs, xfnargs)
+          val xfn = mkftn(typesubst(fn.type, T0, XT), xfnargs, xfnbody)
+          val output = "sort(map(item^biglist) { [XT: item.AT, index] }, xfn).[index < K].{ biglist[this.inx] }"
+          parseRW(output)
+    }
+}
+rewrite(extractAndSort)
+import go "math/rand"
+val tt = tuple(xx : float, yy : string, zz : integer)
+val randx = rand.New(rand.NewSource(1))
+val aLst = (1..800).{ val f = randx.Float64(); [tt: f, "xxx", round(5500.0*f)] }
+sort(aLst, \(a,b : tt) { a.zz < b.zz }).[index < 20]

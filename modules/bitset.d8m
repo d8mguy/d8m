@@ -1,0 +1,102 @@
+// Module bitset defines the bitset0 and smallint64 types. Bitset0 provides bitsets in single integer64 words; smallint64
+// defines integers taking values between 0 and 63.
+// The compiler interacts indirectly with these definitions by converting ELTs internally to integer and asserting of them the max
+// values they can take. So ELTs with fewer than 64 elements will work as bitset0. The module defines a STMapping for
+// set(smallint64) and ensures that it's processed whenever the set type is present. However, to use it you must applyST yourself.
+//
+// Bitset0 uses eachstart protocol to be enumerable.
+
+import go "math/bits"
+val smallint64 = extend integer where { assert self >= 0 && self < 64 }
+val bitset0 =
+  extend tuple(private x: bits64) where {
+    method setbit = \mod(inx: integer) { assert inx < 64; x = or(x, bitnum(inx)) }
+    method clearbit = \mod(inx: integer) { assert inx < 64; x = andnot(x, bitnum(inx)) }
+    method empty = \() { cvt(x, integer) == 0 }
+    method inBitSet = \(inx: integer) { cvt(and(x, bitnum(inx)), integer) != 0 }
+    method count = \() { bits.OnesCount(cvt(x, integer)) }
+    method union = \imp(other: bitset0) { var rslt = copy(self); rslt.x = or(x, other.x); rslt }
+
+    // tells if self is a subset of other
+    method contains = \(other: bitset0) { and(x, other.x) == x }
+    method intersection = \imp(other: bitset0) { var rslt = copy(self); rslt.x = and(rslt.x, other.x); rslt }
+    method lithook = \mod(lst: list(integer)) { each(elt^lst) setbit(elt); self }
+    method eachstart = \imp() {
+        val bs = self
+        val estype = extend tuple(nelts, seen, nxinx: integer, done: boolean) where {
+            method value = \() { nxinx }
+            method eachdone = \() { done }
+            method eachstep = \mod() {
+                seen += 1
+                if(seen == nelts) done = true
+                else loop { nxinx += 1; if(bs.inBitSet(nxinx)) break }
+            }
+            method lithook = \mod(nelts: integer) {
+                self.done = nelts <= 0
+                self.nelts = nelts
+                self.seen = 0
+                self.nxinx = 0
+                unless(done) { each(i^0..64) if(bs.inBitSet(i)) { nxinx = i; break } }
+            }
+        }
+        return [estype: count(self)]
+    }
+  }
+
+oncondition defined(set, type) {
+    given(aBit: integer, aSet: set(smallint64)) {
+    	STMap {
+    		source = set(smallint64)
+    		target = bitset0
+    		direct count, lithook
+    		aBit in self => self.inBitSet(aBit)
+    		self.isEmpty => self.empty
+    		self.add(aBit) => self.setbit(aBit)
+    		self.remove(aBit) => self.clearbit(aBit)
+    		// the cast in rhs ensures that both operands to union are bitsets
+    		self + aSet => union(self, aSet)
+    		intersection(self, aSet) => intersection(self, aSet)
+    		subset(self, aSet) => contains(self, aSet)
+    		enumerable(self) => self
+    	}
+    }
+}
+export bitset0, smallint64
+
+/*
+import "testing" melted
+val tests = \mod(options: list(label)) {
+	var basics = [tstate: :basics]
+	if(:basics in options) {
+		var bs1 = [bitset0: 1,5,2]
+		var bs2 = [bitset0: 7,3,19,21,0]
+		var bs3 = [bitset0:]
+		basics.should(bs3.empty, "true")
+		basics.should(bs1.empty, "false")
+		basics.should(bs1.union(bs3), "38")
+		basics.should(bs2.union(bs3), "2621577")
+		basics.should(bs2.union(bs1), "2621615")
+		basics.should(bs2.intersection(bs3).empty, "true")
+		bs2.clearbit(21)
+		basics.should(bs2.union(bs3), "524425")
+		bs2.setbit(3)
+		basics.should(bs2.union(bs3), "524425")
+		basics.should(bs2.inBitSet(1), "false")
+		basics.should(bs2.inBitSet(2), "false")
+		basics.should(bs2.inBitSet(3), "true")
+		basics.should(bs3.inBitSet(14), "false")
+		basics.should(bs1.inBitSet(6), "false")
+		basics.should(bs1.inBitSet(5), "true")
+		bs2.clearbit(4)
+		basics.should(bs2.union(bs3), "524425")
+		bs2.clearbit(19)
+		basics.should(bs2.union(bs3), "137")
+		basics.should(bs1.union(bs2), "175")
+		bs2.setbit(5)
+		basics.should(bs2.union(bs3), "169")
+		basics.should(bs1.union(bs2), "175")	
+	}
+	basics.report
+}
+*/
+

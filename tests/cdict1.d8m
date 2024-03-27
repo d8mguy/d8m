@@ -1,0 +1,5 @@
+import "cdict" melted
+
+val cdi = countingdict(integer)
+val cd0 = [cdi: 1,5,2,5,3,55]
+cd0.eltcount(3)

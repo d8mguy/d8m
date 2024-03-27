@@ -1,0 +1,12 @@
+// test olist.diff method
+val lstA = [8, 11, 14, 17, 20, 23, 26, 29, 32, 35]
+val lstB = [4, 8, 12, 16, 20, 24]
+import "olist" melted
+val olistOI = olist0(integer)
+val foo = \imp() {
+    val listA = [olistOI: lstA]
+    val listB = [olistOI: lstB]
+    println("A:", listA, "; B:", listB, "; A-B:", listA.diff(listB))
+    println("B-A:", listB.diff(listA))
+}
+foo()

@@ -1,0 +1,12 @@
+// tests of set enumeration, non-duplication, and equality
+import "set" melted
+val intset = set(integer)
+val s0 = [intset: 1, 17, 3, 5, 3, 22, 18, 1, 33, 8]
+val tryIntset = \() {
+    println(s0.count) // 8
+    val s1 = [intset: s0.{ (this + 2) % 10 }]
+    println(s1.count)
+    println(s0 == s1)
+    println(s1)
+}
+tryIntset()

@@ -1,0 +1,19 @@
+// multisort1: sort one type generically and another with an instantiated sort
+import "sort" melted
+import go "math/rand"
+val otup = extend tuple(xx : integer, yy : string) where {
+    method $< = \(other : otup) { self.xx < other.xx }
+}
+val gnctup = GSLT(otup)
+val abtup = tuple(aa : list(integer), bb : integer)
+val try2sorts = \imp() {
+    val randx = rand.New(rand.NewSource(1))
+    var lst1 = cast((1..50).{ [otup: randx.Intn(300), fmt.Sprint(randx.Intn(40))] }, gnctup)
+    var lst2 = (1..40).{ [abtup: (1..randx.Intn(12)).{ this }, randx.Intn(100)+100] }
+    val abtupCmp = \(x, y : abtup) { x.bb < y.bb }
+    modsort(lst1)
+    modsort(lst2, abtupCmp)
+    println(lst1)
+    println(lst2)
+}
+try2sorts()

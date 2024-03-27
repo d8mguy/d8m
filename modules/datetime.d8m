@@ -1,0 +1,499 @@
+// The datetime module provides for converting from string to an internal datetime representation and back, and some
+// calculations on the internal format. A couple things are unusual about this module. One: it allows different amounts
+// of precision corresponding to what's in the data. More specifically, the "baseunit" can range from year to second.
+// Two: it picks up on cues in date strings to figure out the format, so you don't have to tell it much.
+//
+// Thus, a newly created datetime object is "naive"; it modifies itself based on the first date string it reads to reflect the
+// format it finds. (With formats like nn/nn/nnnn you must tell it whether to expect the month or day first.) Thereafter,
+// it expects the same format. Naturally, there are limits on the flexibility of reading formats. The
+// accepted date field separators are / and -. The week and month names are only in English. In - and / separated formats,
+// a 2-digit year field is accepted and treated as being in the 21st century. In the rare case that you wish to talk about
+// the year 50, you can write it as 0050. (But toString always writes years without zero-padding and does not subtract the
+// 2000 to get 2-digit outputs.) The only accepted time field separator is :. A time can have 2 or 3 such
+// fields corresponding to either hh:mm or hh:mm:ss; there is no provision for fractional seconds. Single digit numbers are
+// accepted (but never produced) in this context. The AM and PM indicators are not accepted or produced -- 24 hour times only.
+//
+// For converting internal datetimes to strings, you can change various internal settings (baseunit, firstcode, mn1, sep, etc)
+// to get different styles. Make changes to baseunit with the provided setter method, since in certain cases it affects
+// the internal representation.
+//
+// The provided datetimes type extends datetime to work with lists of dates, all in the same format. There are a few
+// methods: one to append more dates to the list; one to get statistics like earliest & latest date; whether the sequence
+// of dates is monotone (in either direction) and whether there is a constant interval between all the dates. (This will
+// be the case for regularly sampled data, and when it's the case, you can compress the list of dates to two items.)
+//
+// This code generally assumes integer is a 64b type. However, if you represent only dates (no times) any reasonable date
+// will fit into a 32b integer. And the code should "just work" (although this is untested as I write this comment). This
+// module does not handle timezones, which I view as being about something closer to "spacetime" than just time. It is
+// possible to read date strings that include weekday information, but this information is discarded; there is currently
+// no facility to print weekdays. A reasonable way to think about the range of times correctly handled, and the scheme for
+// representing them, is past times back to year 0, assuming the Gregorian calendar (which of course, was not used until
+// the 16th century) all the way back. And future times into the indefinite future, trillions of years assuming you've got
+// 64b integers.
+//
+// The mn1 slot controls whether dd/dd/dd is interpd as mm/dd/yy (mn1 = true) or dd/mm/yy.
+//
+// There are some tricky cases about recognizing formats. In particular, a date string consisting of only a year is ambiguous
+// with integers. We adopt the following compromise. If the string consists of 4 digits, it's treated as a year-only date,
+// else rejected.
+
+import "bytes"
+import "strings"
+
+export datetime, datetimes, dateFields
+
+// next, some defns for tokenizing and classifying parts of string fields that might be "complex" repns of dates
+val monthnames = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec",
+	"january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"]
+val weeknames = ["mon", "tue", "wed", "thu", "fri", "sat", "sun", "monday", "tuesday", "wednesday",
+ 	"thursday", "friday", "saturday", "sunday"]
+// following are pll: char in string matches index of label
+val singletons: list(byte) = "+-,:/"
+val snglClasses = [:plus, :dash, :comma, :colon, :slash]
+// following is 0-based and not for leap years
+val monthdayLengths = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+val monthdayOffsets = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334]
+
+// This is used to drive a "format it your way" version of datetime.toString
+val dateFields = tuple(year, month, day, hour, minute, second: integer)
+
+// This token streamer returns the following token set:
+//   :eos   end of string
+//   :bad   unexpected token
+//   :plus, :dash, :camma, :colon, :slash   corresponding single character
+//   :dgsh  1 or 2 digit integer token
+//   :dg4   4 digit integer token
+//   :monnm, :weeknm  a string recognized as a month or week
+val tknstreamer = extend tuple(strg: list(byte), ofs, value: integer) where {
+	// find is a predicate for index of tok in a list, plus sets lastIndex if returning true
+	private method find = \mod(tok: list(byte), lst: list(string)) {
+		val inx = lst.index(cvt(tok, string))
+		if(inx == nil) false
+		else { value = inx; true }
+	}
+	// next tokenizes according to simple rules; it returns a label classifying the token, updates ofs, and sets value if token is digits.
+	method next = \mod() {
+		loop {
+			if(ofs == strg.count) return :eos
+			if(bytes.spacetab(strg[ofs])) ofs += 1 else break
+		}
+		val tkstart = ofs
+		var allDigit = true
+		while(ofs < strg.count) {
+			val nxbyte = strg[ofs]
+			val sinx = singletons.index(nxbyte)
+			if(sinx != nil) {
+				if(ofs == tkstart) { ofs += 1; return snglClasses[sinx] }
+				break
+			} else if(bytes.lower(nxbyte) || bytes.upper(nxbyte)) {
+				allDigit = false
+				ofs += 1
+			} else if(bytes.digit(nxbyte)) {
+				ofs += 1
+			} else if(bytes.spacetab(strg[ofs])) {
+				break
+			} else {
+				return :bad
+			}
+		}
+		// here we've got a token terminated by punctuation; figure out what kind
+		val len = ofs - tkstart
+		if(allDigit) {
+			value = cvt(strg.select(tkstart, ofs), string).to_i
+			if(len == 4) :dg4
+			else if(len == 1 || len == 2) :dgsh
+			else :bad
+		} else {
+			// here for word tokens
+			val tok = bytes.toLower(strg.select(tkstart, ofs))
+			if(find(tok, monthnames)) :monnm
+			else if(find(tok, weeknames)) :wknm
+			else :bad
+		}
+	}
+}
+
+// The expressions that create and access bitfields for baseOffset
+val fsetMonth = \(v:integer) { cvt(lshift(v, 5), integer) }
+val fsetYear = \(v:integer) { cvt(lshift(v, 9), integer) }
+val fsetTime = \(v:integer) { cvt(lshift(v, 17), integer) }
+val fgetDay = \(v:integer) { cvt(and(v, 31), integer) }
+val fgetMonth = \(v:integer) { cvt(and(rshift(v, 5), 15), integer) }
+val fgetYear = \(v:integer) { cvt(rshift(v, 9), integer) }
+val fgetTime = \(v:integer) { cvt(and(v, 131071), integer) }
+val fgetOther = \(v:integer) { cvt(rshift(v, 17), integer) }
+
+val datetime = extend tuple(private baseunit: label,    // can be :year, :month, :day, :minute, :second
+    baseOffset: integer,            // field encoded: b0-4=day, b5-9:month, b9+:year; if baseunit includes time, shift up 17b
+    firstcode: label,               // initially :none, then code of first token, used for calls to both fromString and toString
+    sep: label,                     // expected field separator: - or /; : for times; initially :none
+    mn1: boolean,                   // user supplied flag expect month first if true (USA) else day first (rest of the world)
+    errstrg: string) where {
+	
+	method lithook = \mod(mnfirst: boolean) {
+		baseunit = :unknown; baseOffset = 0
+		firstcode = :none; sep = :none; errstrg = ""; mn1 = mnfirst
+	}
+
+	// baseunit is private, so you have to pass by the check. It verifies the unit is legit but doesn't complain if it isn't.
+	method setBaseunit = \mod(newunit: label) -> nothing {
+	    if(newunit in [:year, :month, :day, :minute, :second]) {
+	        val time0 = baseunit in [:minute, :second]
+	        val time1 = newunit in [:minute, :second]
+	        if(time0 && !time1) baseOffset = fgetOther(baseOffset)
+	        else if(time1 && !time0) baseOffset = fsetTime(baseOffset)
+    	    baseunit = newunit
+	    }
+	}
+	
+	// is y a leap year?
+	val leapyear = \(y: integer) { y%4 == 0 && (y%100 != 0 || y%400 == 0) }
+
+	// How many leap days between years x1 and x2? Note: count as from jan 1 of each year.
+    val leapDays = \imp(x1, x2: integer) {
+        // ensure y1 <= y2
+        val y1 = x1 >= x2 ? x2 : x1
+        val y2 = x1 >= x2 ? x1 : x2
+        val y1mod4 = y1 % 4
+        var ly0 = y1      // ly0 will be first leap year >= y1
+        if(y1mod4 > 0) ly0 += 4 - y1mod4
+        if(ly0%100 == 0 && ly0%400 != 0) ly0 += 4
+        if(ly0 >= y2) 0
+        else {
+            // lycount0 is the count of LY's between ly0 and y2 uncorrected for centuries
+            // note: add 1 up front to count ly0 but remove one at the end to not count if y2 is a LY
+            var lycount0 = 1 + (y2 - (ly0 + 1))/4
+            val centcount = (y2/100) - (ly0/100)
+            val cent4count = (y2/400) - (ly0/400)
+            // println("ld(#{y1},#{y2}):", ly0, lycount0, centcount, cent4count)
+            (lycount0 - centcount) + cent4count
+        }
+    }
+	
+	// Given a string, extract a token stream and attempt to turn it into a date at some resolution.
+	// If self is uninitialized, infer the pattern from what's in the string; if initialized, require it
+	// to match the format previously inferred.
+	method fromString = \mod(s: string) -> boolean {
+		var tkstrm = [tknstreamer: cvt(s, list(byte)), 0, 0]
+		var code0 = tkstrm.next
+		var lastval = tkstrm.value
+		// println("fromString", code0, lastval)
+		val setPattern = (firstcode == :none)
+		unless(code0 in [:dg4, :dgsh, :monnm, :wknm]) return false
+		if(setPattern) firstcode = code0
+		else unless(firstcode == code0) { errstrg = "date #{s} does not match previous row"; return false }
+		var nxcode = tkstrm.next
+		var curOfs = 0		
+		var gotIt = false
+		if(code0 == :wknm) {		// for now we're going to ignore this completely
+			if(nxcode == :comma) code0 = tkstrm.next else code0 = nxcode
+			lastval = tkstrm.value
+			nxcode = tkstrm.next
+		}			
+		if(code0 == :dg4) {				// here for year first
+		    if(nxcode == :eos) {
+		        if(setPattern) baseunit = :year
+		        baseOffset = fsetYear(lastval)
+		        return true
+		    }
+			if(setPattern) baseunit = :day
+			curOfs = fsetYear(lastval)
+			unless(nxcode in [:dash, :slash]) { errstrg = "expecting / or - separator"; return false }
+			if(setPattern) sep = nxcode
+			unless(nxcode == sep) { errstrg = "expected #{sep} as separator but got #{nxcode}"; return false }
+			nxcode = tkstrm.next
+			unless(nxcode == :dgsh && tkstrm.value <= 12) { errstrg = "month digits expected"; return false }
+			val month = tkstrm.value - 1
+			curOfs += fsetMonth(month)
+			nxcode = tkstrm.next
+			if(nxcode == :eos) {
+				if(setPattern) { baseunit = :month }				
+			} else {
+				unless(nxcode in [:dash, :slash]) { errstrg = "expecting / or - separator"; return false }
+				unless(nxcode == sep) { errstrg = "expected #{sep} as separator but got #{nxcode}"; return false }
+				nxcode = tkstrm.next
+				unless(nxcode == :dgsh && 1 <= tkstrm.value && tkstrm.value <= 31) { errstrg = "day digits expected"; return false }
+				if(tkstrm.value > monthdayLengths[month] && !(leapyear(lastval) && month == 1 && tkstrm.value == 29)) {
+				    errstrg = "#{tkstrm.value} is not a valid day for the month of " + strings.toCap(monthnames[month+12])
+				    return false
+				}
+				curOfs += tkstrm.value - 1
+			}
+			gotIt = true			
+		} else if(code0 == :dgsh) {
+			// Most complicated pattern. If sep is colon, treat as time only. Can also be 12 Jan{,} 1928, 12-12-55, etc
+			if(nxcode == :colon) {
+				if(setPattern) { sep = :colon }		// time is collected later
+				else unless(nxcode == sep) { errstrg = "expected #{sep} as separator but got #{nxcode}"; return false }
+				gotIt = true			
+			} else if(nxcode in [:dash, :slash]) {
+				if(setPattern) { sep = nxcode }
+				else unless(sep == nxcode) { errstrg = "expected #{sep} as separator but got #{nxcode}"; return false }
+				// here, we pay attn to mn1
+				if(mn1) {		// have we got a month?	
+					unless(lastval <= 12) { errstrg = "month digits expected"; return false }
+					curOfs = fsetMonth(lastval - 1)
+					nxcode = tkstrm.next		// should be day
+					unless(nxcode == :dgsh && tkstrm.value <= 31) { errstrg = "day digits expected"; return false }
+					curOfs += tkstrm.value - 1
+					nxcode = tkstrm.next		// should be sep
+					unless(sep == nxcode) { errstrg = "expected #{sep} as separator but got #{nxcode}"; return false }
+					nxcode = tkstrm.next		// should be year
+				} else {
+					unless(lastval <= 31) { errstrg = "day digits expected"; return false }
+					curOfs = lastval - 1
+					nxcode = tkstrm.next		// should be month
+					unless(nxcode == :dgsh && tkstrm.value <= 12) { errstrg = "month digits expected"; return false }
+					curOfs += fsetMonth(tkstrm.value - 1)
+					nxcode = tkstrm.next		// should be sep
+					unless(sep == nxcode) { errstrg = "expected #{sep} as separator but got #{nxcode}"; return false }
+					nxcode = tkstrm.next		// should be year
+				}	
+			} else if(nxcode == :monnm) {		// handle "12 Jan..."
+				curOfs = lastval - 1
+				curOfs += fsetMonth(tkstrm.value % 12)
+				nxcode = tkstrm.next
+				if(nxcode == :comma) nxcode = tkstrm.next
+			}
+			if(nxcode in [:dg4, :dgsh]) {
+				val yrnum = (nxcode == :dg4 ? tkstrm.value : tkstrm.value + 2000)
+				if(setPattern) baseunit = :day
+				curOfs += fsetYear(yrnum)
+				gotIt = true			
+			}
+			unless(gotIt) { errstrg = "cannot decode '#{s}' as date"; return false }
+		} else {		// here for monthname start
+			unless(code0 == :monnm) { errstrg = "programming error, expected :monnm and got #{code0}"; return false }
+			curOfs = fsetMonth(lastval % 12)      // % 12 because two sets: short & full
+			if(sep != :none && nxcode != sep) { errstrg = "expected #{sep} as separator but got #{nxcode}"; return false }
+			if(nxcode == :comma) nxcode = tkstrm.next
+			else if(nxcode in [:dash, :slash]) {
+				if(setPattern) { sep = nxcode }
+				nxcode = tkstrm.next
+			}
+			if(nxcode == :dgsh) {			// take as a day
+				unless(1 <= tkstrm.value && tkstrm.value <= 31) { errstrg = "day digits expected"; return false }
+				curOfs += tkstrm.value - 1
+				nxcode = tkstrm.next
+				if(nxcode == :comma) nxcode = tkstrm.next
+				unless(nxcode == :dg4) { errstrg = "4-digit year expected"; return false }
+				if(setPattern) baseunit = :day
+				curOfs += fsetYear(tkstrm.value)
+			} else if(nxcode == :dg4) {		// take as year, ie no day
+				if(setPattern) baseunit = :month
+				curOfs += fsetYear(tkstrm.value)
+			}
+		}
+		// at this point, we've got the date, unless there isn't one; now collect the time if there is one
+		// if already nxcode = :colon, we're in the time-only case, otherwise either get to there or detect that it's date only
+		unless(nxcode == :colon) {
+			nxcode = tkstrm.next
+			if(nxcode == :dgsh) { lastval = tkstrm.value; nxcode = tkstrm.next }
+		}
+		val expectTime = baseunit in [:minute, :second]
+		//println("sp:#{setPattern}; firstcode:#{firstcode}; baseunit:#{baseunit}; baseOffset:#{baseOffset}")
+		var tmOfs = 0
+		if(nxcode == :colon) {
+			unless(setPattern || expectTime) { errstrg = "time not expected"; return false }
+			if(baseunit == :month) { errstrg = "times cannot be defined unless days are as well"; return false }
+			// in this case, lastval is the hours value
+			unless(lastval < 24) { errstrg = "#{lastval} is not a legal hours value"; return false }
+			tmOfs = lastval * 3600
+			nxcode = tkstrm.next
+			if(nxcode == :dgsh) {
+				unless(tkstrm.value < 60) { errstrg = "#{tkstrm.value} is not a legal minutes value"; return false }
+				tmOfs += tkstrm.value * 60
+			} else { errstrg = "expected minutes"; return false }
+			nxcode = tkstrm.next
+			if(nxcode == :colon) {
+				nxcode = tkstrm.next
+				unless(nxcode == :dgsh && tkstrm.value < 60) { errstrg = "cannot read seconds"; return false }
+				tmOfs += tkstrm.value
+				if(setPattern) { baseunit = :second }
+			} else if(setPattern) { baseunit = :minute }
+		} else if(expectTime) { errstrg = "time expected"; return false }
+		if(baseunit in [:minute, :second]) curOfs = fsetTime(curOfs) + tmOfs
+		baseOffset = curOfs
+		true
+	}
+	
+	// use self's baseunit and similar params to return the string form of the date at the given offset
+	method toString = \imp(ofs: integer) -> string {
+		val hasTime = baseunit in [:minute, :second]
+		val dayOfs = (hasTime ? fgetOther(ofs) : ofs)
+		val tmOfs = (hasTime ? fgetTime(ofs) : 0)
+		val year = fgetYear(dayOfs)
+		val mnum = fgetMonth(dayOfs) + 1, daynum = fgetDay(dayOfs) + 1
+		val sepstrg = (sep == :slash ? "/" : "-")
+		var tmstrg = ""
+		if(hasTime) {
+			val tmp = tmOfs/60
+			tmstrg = fmt.Sprintf("%02d:%02d", tmp / 60, tmp % 60)
+			if(baseunit == :second) tmstrg += fmt.Sprintf("%02d", ofs % 60)
+			if(sep == :colon) return tmstrg
+			tmstrg = " " + tmstrg
+		}
+		if(baseunit == :month) {
+			if(firstcode == :dg4) fmt.Sprintf("%d%s%02d", year, sepstrg, mnum) else fmt.Sprintf("%d%s%d", mnum, sepstrg, year)
+		} else if(baseunit == :year) {			// year is not a fromString format but can be set manually
+			stringify(year)
+		} else if(firstcode == :dg4) {			// must be yyyy mm dd
+		    fmt.Sprintf("%d%s%02d%s%02d", year, sepstrg, mnum, sepstrg, daynum) + tmstrg
+		} else if(firstcode in [:monnm, :wknm]) {
+			// for now, not going to print weekdays or worry about diff between long and short month names, maybe get to those later.
+			if(mn1) "#{strings.toCap(monthnames[mnum-1])} #{daynum}, #{year}" + tmstrg
+			else "#{daynum} #{strings.toCap(monthnames[mnum-1])}, #{year}" + tmstrg
+		} else if(firstcode == :dgsh) {
+			// again, noticing some missing bits in the internal repn, I'll start by just doing std strg stuff
+			var strg = fmt.Sprintf("%02d", mn1 ? mnum : daynum) + sepstrg
+			strg + fmt.Sprintf("%02d", mn1 ? daynum : mnum) + fmt.Sprintf("%s%d%s", sepstrg, year, tmstrg)
+		} else {
+			"did I miss something?"
+		}
+	}
+
+	// This toString variant extracts the relevant fields and passes them to fmtftn with the fmt string. This allows
+	// you to get any output format you want, although if it involves weekdays, you have to do them yourself.
+	method toString = \imp(ofs: integer, fmtftn:\(dateFields)->string) -> string {
+	    var fields: dateFields
+	    var ofs0 = ofs
+	    if(baseunit in [:hour, :minute, :second]) {
+	        var timepart = fgetTime(ofs)
+	        fields.second = timepart % 60
+	        timepart /= 60
+	        fields.minute = timepart % 60
+	        fields.hour = timepart / 60
+            ofs0 = fgetOther(ofs)
+	    }
+	    fields.day = fgetDay(ofs0)
+	    fields.month = fgetMonth(ofs0)
+	    fields.year = fgetYear(ofs0)
+	    fmtftn(fields)
+	}
+	
+	// special help for coding a year number to internal (baseOffset) format
+	method year2Offset = \(yr: integer) {
+		fsetYear(yr)
+	}
+	
+	// Return Ofs1 - Ofs2 in baseunits. Obviously, this is negative if Ofs2 is later than Ofs1.
+	// Note that Ofs1 and Ofs2 MUST both be defined relative to same baseunit.
+	method delta = \imp(Ofs1, Ofs2: integer) {
+	    var ofs1 = Ofs1, ofs2 = Ofs2
+	    if(baseunit in [:minute, :second]) {
+	        ofs1 = fgetOther(Ofs1)
+	        ofs2 = fgetOther(Ofs2)
+	    }
+		var year1 = fgetYear(ofs1)
+		var year2 = fgetYear(ofs2)
+		if(baseunit == :year) return year1 - year2
+		// here, we want months indexed from 0, and days to be day of year
+		var mnum1 = fgetMonth(ofs1), daynum1 = fgetDay(ofs1) + monthdayOffsets[mnum1]
+		var mnum2 = fgetMonth(ofs2), daynum2 = fgetDay(ofs2) + monthdayOffsets[mnum2]
+		var ldays = leapDays(year1, year2)
+		if(baseunit == :month) {
+		    (year1 - year2)*12 + (mnum1 - mnum2)
+		} else {
+			if(leapyear(year1) && daynum1 >= 31+28) daynum1 += 1
+			if(leapyear(year2) && daynum2 >= 31+28) daynum2 += 1
+			var close = (year1 - year2)*365 + ldays + (daynum1 - daynum2)
+			//println("close=", close, "ldays=", ldays, "daynums:", daynum1, daynum2)
+			if(baseunit == :day) close
+			else {
+			    val secs1 = fgetTime(Ofs1), secs2 = fgetTime(Ofs2)
+			    // hh:mm:ss is encoded with *60
+			    val mins1 = secs1/60, mins2 = secs2/60
+			    val hours1 = mins1/60, hours2 = mins2/60
+			    close *= 24
+			    if(baseunit == :hour) close + hours1 - hours2
+			    else if(baseunit == :minute) close * 60 + mins1 - mins2
+			    else close * 3600 + secs1 - secs2
+			}
+		}
+	}
+}
+
+// To a datetime, add room for a list of offsets, each relative to the datetime, and for statistics info.
+// Most of the stat attributes are self-explanatory, but not all. Monotone gets set to true if every interval is either >= 0
+// or <= 0. Consec == 0 normally means some elements are not consecutive (same interval) but it can also mean that all intervals
+// are 0 (i.e. every date is the same). When consec != 0, it can capture a variety of patterns, for example if dt.baseunit == :day
+// and consec = 7, we have consecutive dates at weekly intervals. Note that consec != 0 implies monotone.
+val datetimes = extend tuple(dt: datetime, private offsets: list(integer), minofs, maxofs, consec: integer, monotone, statsOk: boolean) where {
+
+    // Normally, convert a list of date strings when creating a datetimes entity
+    method lithook = \mod(mnfirst: boolean, strgs: list(string)) {
+        dt = [datetime: mnfirst]
+        offsets = zerolist(strgs.count)
+        each(dstrg^strgs, inx) {
+            if(dt.fromString(dstrg)) {
+                //println(dstrg, ":", dt.baseunit, dt.baseOffset)
+                offsets[inx] = dt.baseOffset
+            } else {
+                offsets = offsets[0...inx]
+                dt.errstrg += "; item #{inx}"
+                break
+            }
+        }
+    }
+
+    // Extend an existing list of offsets.
+    method append = \mod(strgs: list(string)) {
+        val prevcount = offsets.count
+        each(dstrg^strgs, inx) {
+            if(dt.fromString(dstrg)) {
+                offsets.pushb(dt.baseOffset)
+            } else {
+                dt.errstrg += "; item #{inx + prevcount}"
+                break
+            }
+        }
+        unless(offsets.count == prevcount) statsOk = false
+    }
+
+    // You shouldn't call dt.setBaseunit since it can change the meaning of all the offsets. There is at present
+    // no language mechanism to express this constraint.
+    method setBaseunit = \mod(newunit: label) -> nothing {
+        if(newunit in [:year, :month, :day, :minute, :second]) {
+            val time0 = dt.baseunit in [:minute, :second]
+            val time1 = newunit in [:minute, :second]
+            if(time0 && !time1) each(ofs^offsets, inx) offsets[inx] = fgetOther(ofs)
+            else if(time1 && !time0) each(ofs^offsets, inx) offsets[inx] = fsetTime(ofs)
+            dt.setBaseunit(newunit)
+        }
+    }
+
+
+    // Here to calc stats, if needed.
+    method calcStats = \mod() {
+        if(statsOk) return
+        minofs = offsets[0]
+        maxofs = offsets[0]
+        monotone = true
+        var prevofs = offsets[0]
+        //println("inx 0", prevofs.to_hex())
+        var prevIntvl = 0
+        each(inx^1...offsets.count) {
+            val nxofs = offsets[inx]
+            val intvl0 = dt.delta(nxofs, prevofs)
+            //println(inx, ":", intvl0, prevIntvl, nxofs.to_hex())
+            if(inx == 1) {
+                consec = intvl0
+            } else {
+                if(consec != intvl0) consec = 0
+                if((prevIntvl > 0 && intvl0 < 0) || (prevIntvl < 0 && intvl0 > 0)) {
+                    //println("setting monotone false:", prevIntvl, intvl0)
+                    monotone = false
+                }
+            }
+            unless(intvl0 == 0) prevIntvl = intvl0
+            minofs = min(minofs, nxofs)
+            maxofs = max(maxofs, nxofs)
+            prevofs = nxofs
+        }
+        statsOk = true
+    }
+
+    // if an error was detected, it's in the datetime
+    method error = \() { dt.errstrg }
+}
+

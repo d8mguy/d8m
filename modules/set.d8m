@@ -1,0 +1,38 @@
+// Module set provides an abstract definition of set and an STMap to go's map type.
+
+export set
+
+val set = \typegen(T::entity) {
+	val setT = extend tuple(private x: list(T)) where {
+		assert enumerable(x)
+		method $cvt = \() -> list(T) { copy(x) }
+		method $in = \(elt: T) { elt in x }
+		method add = \mod(elt: T) { unless(elt in x) x.pushb(elt) }
+		method add = \mod(other: setT) { each(o^other) self.add(o) }
+		method remove = \mod(elt: T) { val inx = x.index(elt); if(inx != nil) x.removeIndex(inx) }
+		method remove = \mod(elts: list(T)) { each(e^elts) self.remove(e) }
+		method lithook = \mod(c: list(T)) { each(x^c) add(x) }
+		method count = \() { x.count }
+		method isEmpty = \() { x.count == 0 }
+		method overlaps = \imp(other: setT) { var rslt = false; each(e^x) if(e in other) { rslt = true; break }; rslt }
+		method $== = \(other: setT) -> boolean { other.count == x.count && all(self.{this in other}) }
+		// Note: this is self <= other.
+		method subset = \(other: setT) { all(self.{this in other}) }
+		// Note: intersection could be more efficient, no need for the uniq-check in "rslt.add(o)". But there are tradeoffs.
+		method intersection = \imp(other: setT) { var rslt: setT = []; each(o^other) if(o in x) rslt.add(o); rslt }
+		method $+ = \imp(other: T) { var rslt: setT = copy(self); rslt.add(other); rslt }
+		method $+ = \imp(other: setT) { var rslt: setT = copy(self); each(o^other) rslt.add(o); rslt }
+	}
+	setT
+}
+given(T1::entity, y: T1, aLT: list(T1)) {
+	STMap {
+		source = set(T1)
+		target = Gomap(T1, boolean)
+		direct count
+		y in self => rvalindexWD(self, y, false)
+		self.add(y) => self.lvalindex(y, true)
+		self.remove(y) => self.delete(y)
+		enumerable(self) => self.keys
+	}
+}

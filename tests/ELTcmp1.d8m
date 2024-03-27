@@ -1,0 +1,29 @@
+// ELTcmp1
+// Tests codegen for ELTs, should compile to ints
+val fieldcat = extend label(:empty, :int, :flt, :word, :strg, :date) where {
+	method mergeable = \(other : fieldcat) {
+		self == other || self == :empty || other == :empty ||
+		 (self == :flt && other == :int) || (self == :int && other == :flt) ||
+		 (self == :strg && other == :word) || (self == :word && other == :strg)
+	}
+	// should be called only when self and other are mergable
+	method merged = \(other : fieldcat) {
+		if(self == other || other == :empty) self
+		else if(self == :empty) other
+		else if(self == :int || self == :flt) :flt
+		else :strg
+	}
+}
+// describes individual fields, with ptninx being an indicator of which pattern matched
+val fieldT = extend tuple(quoted : boolean, value : string, cat : fieldcat) where {
+	method stringify = \() { (quoted ? "quoted " : "") + stringify(cat) }
+}
+val foo = \imp(strgs : list(string)) {
+    var fcs = strgs.{ [fieldT: false, this, :int] }
+    fcs[2].cat = :strg
+    fcs[1].cat = :date
+    var bools = fcs[1...fcs.count].{ fcs[0].cat.mergeable(this.cat) }
+    bools += fcs[2...fcs.count].{ fcs[1].cat.mergeable(this.cat) }
+    bools
+}
+foo(["xx", "yy", "zz", "www"])
