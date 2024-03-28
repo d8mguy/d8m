@@ -4,3 +4,6 @@ dbg.log
 d8mqry.go
 runtests
 tests/*.go
+.lasttest.txt
+modules/modulesDB.json
+

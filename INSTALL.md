@@ -5,7 +5,7 @@
 2. You must have Go installed.
 
 Notes:
-1. it's possible that everything runs just fine on Linux. I haven't tested it, so I don't know. But AFAIK there is nothing Mac-specific in my use of Go or any unix tool. 
+1. it's possible that (almost) everything runs just fine on Linux. I haven't tested it, so I don't know. But AFAIK the only Mac-specific part of the code released here is that it expects to install files in `~/Library/Application\ Support`. 
 2. I don't think the installed version of Go matters. If it's really old, that might be a problem. I have never seen changes or incompatibilities as a result of updating (or not updating) my version of Go.  (This release is tested on go version 22.1.)
 3. Installation dependencies/assumptions are as follows. Installation creates a directory at `~/Library/Application\ Support/D8m`, copies the modules directory there, and installs the compiler binaries in `/usr/local/bin`. It's worth knowing that the "modules DB" mentioned in the spec is a file that lives in the modules directory named `modulesDB.json`. It's an array of objects, initially empty. Other d8m related repositories (webgen, perfsis) add entries to it.
 
