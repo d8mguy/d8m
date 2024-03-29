@@ -12,7 +12,7 @@
  */
 
 export basicfile, streamfile, openStream, openBasic, createBasic, openWithError, createWithError, fileDelete, quickCheck,
-    modtime, earlier, dirEntries, dirStreamT, filenameParts
+    modtime, earlier, dirEntries, dirStreamT, filenameParts, filenameGet, filenamePut
 
 import go "os"
 
