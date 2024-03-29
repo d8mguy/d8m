@@ -12,7 +12,7 @@
  */
 
 export basicfile, streamfile, openStream, openBasic, createBasic, openWithError, createWithError, fileDelete, quickCheck,
-    modtime, earlier, filenameParts
+    modtime, earlier, dirEntries, dirStreamT, filenameParts
 
 import go "os"
 
@@ -115,36 +115,222 @@ val earlier = \(d0, d1: os.DirEntry) -> boolean {
     diff < 0
 }
 
-// FilenameParts handles a list(byte) representing a filename as a triple of the directory, base name, extension
-val filenameParts = extend tuple(dir, base, extn: list(byte)) where {
-    method lithook = \mod(nm: list(byte)) {
-        // split at index of last slash in nm and last dot in nm
-        val sinx0 = reverse(nm)[this == '/' => index]
-        val sinx = (sinx0 == nil ? -1 : nm.count - sinx0)
-        val dinx0 = reverse(nm)[this == '.' => index]
-        var dinx = (dinx0 == nil ? -1 : nm.count - dinx0)
-        var pathpart = [list(byte):], basepart = [list(byte):], xpart = [list(byte):]
-        if(sinx < 0) {
-            if(dinx < 0) basepart = nm else { basepart = nm[0...dinx-1]; xpart = nm[dinx...nm.count] }
-        } else if(dinx < 0) { pathpart = nm[0...sinx-1]; basepart = nm[sinx...nm.count]
-        } else { pathpart = nm[0...sinx-1]; basepart = nm[sinx...dinx-1]; xpart = nm[dinx...nm.count] }
-        dir = pathpart
-        base = basepart
-        extn = xpart
+// dirEntries is a quick & dirty directory reader: call ReadDir, ignore errors, and filter sub-directories.
+val dirEntries = \(dirname:string) -> list(os.DirEntry) {
+    val allEntries = os.ReadDir(dirname)
+    allEntries.ok.[!this.IsDir()]
+}
+
+val dirStreamLevel = tuple(
+    curSubdir: string,
+    curNode: list(os.DirEntry),
+    curDirs: list(os.DirEntry),    // used if flags say to enum dirs before or after
+    curInx: integer,               // index into curNode
+    curInxDir: integer)            // index into curDirs (may not be used)
+
+// DirStreamT lets you stream the recursive traversal of directories using os.Readdir. It provides plenty of options.
+// First, you control whether it visits directories in-order, pre-order, post-order. Second, you control whether it
+// visits directories at all, or only non-directory files. (By default it visits only non-directory files.) Third, you
+// can provide functions to filter out files and directories separately, by name or any other attribute, potentially even
+// opening and reading them (though of course, this adds considerable cost, and should likely be done by the code that handles
+// visited files). Fourth, you can reorder files by any attribute, for example mod time. So you could visit files in the
+// order of most recently modified. And/or filter files older than X. Fifth, you can skip traversal of directories after
+// visiting them (this makes sense when the enumDirs flag is set, so that you're visiting directories in the first place).
+//
+// In keeping with the standard definitions of pre-, in-, and post- order, in case directories are visited, they are visited
+// before descending for pre-order or in-order, and after for post-order.
+//
+// Use the `preInPost` slot to control order of visits: -1 for pre, 0 for in, 1 for post.
+// Set enumDirs to true to visit directories. It's false by default; you'll have to explicitly set it to change the value.
+// Set the filterFn, filterDirs, and orderFn slots to define these options. The lithook provides defaults for all, which
+// don't filter (return true uniformly) and don't reorder.
+//
+// To create a dirStreamT, provide the path of a directory. (Use quickCheck first if you're not sure.) Passing anything
+// else creates a dirStreamT in the done state, with its errmsg attribute set to the error message from the ReadDir call.
+// The enumeration will consist of the files in the directory (as well as the directory itself if enumDirs == true. Embedded
+// directories will be traversed if and when your ordering and filtering options indicate.
+//
+// Standard traversal involves calling done and if not true, calling next. Then curval has the DirEntry being visited.
+// To skip traversal of the current directory, call skip. If curval is not a directory, or if enumDirs isn't true, this
+// does nothing.
+//
+// DirStreamT provides a fairly standard stream interface: the next method gets and returns the next item according to the
+// way you've set up the criteria listed above. You can access curval to get the current item, always a os.DirEntry.
+val dirStreamT = extend tuple(entry:string) where {
+    attribute levels: list(dirStreamLevel)
+    assert levels.count != 0
+    attribute curval: os.DirEntry           // Curval caches last value of next, if any. Can be invalid. Initialized by lithook, maintained by next.
+    attribute errmsg: string                // normally unused but can signal a problem
+    attribute preInPost: integer            // 0:enum just curNode; -1 or +1 use curDirs and enum before (-1) or after (+1) files
+    attribute enumDirs: boolean             // if true, return DirEntries that are dirs as well as regular files (false by default)
+    attribute filterFn:\(os.DirEntry)->boolean   // filter nodes by name
+    attribute filterDirs:\(os.DirEntry)->boolean   // filter dirs by name (only if preInPost != 0)
+    attribute orderFn:\(list(os.DirEntry)) -> list(os.DirEntry)     // reorder list if desired
+    attribute started:boolean               // set first time next is called
+
+    // Done is a predicate returning true iff there are no more items to process.
+    // Lithook and next must maintain the invariant that the levels stack is popped as soon as elts are exhausted.
+    // Without this, done would have to search down the stack, or maybe pop it.
+    method done = \() {
+        if(!started) false
+        else {
+            val dsl = levels.last
+            //println("done:", dsl.curInx, dsl.curInxDir)
+            levels.count == 1 && dsl.curInx == dsl.curNode.count && (preInPost >= 0 || dsl.curInxDir == dsl.curDirs.count)
+        }
     }
-    method out = \imp() -> string {
-        var nbytes = dir.count + base.count + extn.count
-        if(dir.count > 0) nbytes += 1
-        if(extn.count > 0) nbytes += 1
-        var rslt: list(byte) = zerolist(nbytes)
-        copyFrom(rslt, 0, dir)
-        var ofs = dir.count
-        if(dir.count > 0) { rslt[ofs] = '/'; ofs += 1 }
-        copyFrom(rslt, ofs, base)
-        ofs += base.count
-        if(extn.count > 0) { rslt[ofs] = '.'; ofs += 1 }
-        copyFrom(rslt, ofs, extn)
-        cvt(rslt, string)
+
+    private method getDir = \mod(nxbase: string) {
+        print("getDir:", nxbase)
+        val newEntries = os.ReadDir(nxbase)
+        if(newEntries.err != nil) {
+            errmsg = newEntries.err
+            println("setting errmsg:", errmsg)
+            [dirStreamLevel: nxbase, [], [], 0, 0]      // create a dirStreamLevel that's already done
+        } else {
+            var nxnode = orderFn(newEntries.ok)
+            var nxdirs: list(os.DirEntry) = []
+            if(preInPost != 0) {
+                var nxnode0: list(os.DirEntry) = []
+                each(x^nxnode) if(x.IsDir()) { if(filterDirs(x)) nxdirs.pushb(x) } else { if(filterFn(x)) nxnode0.pushb(x) }
+                nxnode = nxnode0
+            }
+            print("pushing nxnode=", nxnode.{this.Name()}, "; nxdirs=", nxdirs.{ this.Name()})
+            [dirStreamLevel: nxbase, nxnode, nxdirs, 0, 0]
+        }
     }
+
+    // single step for next; the full next method looks at enumDirs as well. This is a helper for next().
+    // As with done, we assume that exhausted levels have been popped, so levels.last has something to look at.
+    private method nextStep = \mod() {
+        var lvl0 = levels.last
+        println("nextStep:", lvl0.curInx, lvl0.curInxDir, lvl0.curNode.count, lvl0.curDirs.count)
+        if(preInPost == 0) {
+            curval = lvl0.curNode[lvl0.curInx]
+            //println("examining", curval.Name())
+            lvl0.curInx += 1
+            unless(curval.IsDir()) while(lvl0.curInx == lvl0.curNode.count && levels.count > 1) { levels.popb; lvl0 = levels.last; println("popped one") }
+        } else if(preInPost < 0) {      // do subdirs first
+            // the following is arguably abusive code: rely on fact that done checks top of stack only to check need for popping
+            while(self.done()) {
+                levels.popb()
+                lvl0 = levels.last
+                println("popping level", levels.count+1, lvl0.curInx, lvl0.curInxDir, lvl0.curNode.count, lvl0.curDirs.count)
+            }
+            if(lvl0.curInxDir == lvl0.curDirs.count) {
+                while(levels.count > 1 && lvl0.curInx == lvl0.curNode.count && lvl0.curInxDir == lvl0.curDirs.count) {
+                    levels.popb()
+                    lvl0 = levels.last
+                    println("popping level (2)", levels.count+1, lvl0.curInx, lvl0.curInxDir, lvl0.curNode.count, lvl0.curDirs.count)
+                }
+                if(lvl0.curInx < lvl0.curNode.count) {
+                    curval = lvl0.curNode[lvl0.curInx]
+                    lvl0.curInx += 1
+                }
+            } else {
+                curval = lvl0.curDirs[lvl0.curInxDir]
+                lvl0.curInxDir += 1
+                levels.pushb(getDir(lvl0.curSubdir + "/" + curval.Name()))
+                println("pre, pushed", curval.Name())
+            }
+        } else {        // post
+            loop {
+                if(lvl0.curInx < lvl0.curNode.count) {
+                    curval = lvl0.curNode[lvl0.curInx]
+                    lvl0.curInx += 1
+                    while(levels.count > 1 && lvl0.curInx == lvl0.curNode.count) { levels.popb(); lvl0 = levels.last }
+                    //println("post, visiting", curval.Name())
+                    break
+                } else if(lvl0.curInxDir == lvl0.curDirs.count) {   // pop and visit this one
+                    if(levels.count > 1) {
+                        levels.popb()
+                        lvl0 = levels.last
+                        curval = lvl0.curDirs[lvl0.curInxDir - 1]       // was previously incrd; visit now
+                    }
+                    break
+                } else {
+                    curval = lvl0.curDirs[lvl0.curInxDir]
+                    lvl0.curInxDir += 1
+                    levels.pushb(getDir(lvl0.curSubdir + "/" + curval.Name()))
+                    lvl0 = levels.last
+                    //println("post step, lvl0=", lvl0)
+                }
+            }
+        }
+    }
+
+    method skip = \mod() {
+        if(enumDirs && curval.IsDir()) {
+            levels.popb()
+            self.nextStep()
+        }
+    }
+
+    // Next produces and returns the next DirEntry. Should not be called if done().
+    method next = \mod() {
+        unless(started) {
+            levels = [getDir(entry)]
+            started = true
+        }
+        println("b4 next:", levels.last.curSubdir, "nodes:", levels.last.curNode.{ this.Name() }, "dirs:", levels.last.curDirs.{ this.Name() })
+        self.nextStep()
+        unless(enumDirs) while(curval.IsDir()) {
+            if(preInPost == 0) levels.pushb(getDir(levels.last.curSubdir + "/" + curval.Name()))
+            self.nextStep()
+        }
+        curval
+    }
+
+    method fullpath = \() {
+        levels.last.curSubdir + "/" + curval.Name()
+    }
+
+    method lithook = \mod(base:string, pip:integer) {
+        entry = base
+        preInPost = pip
+        enumDirs = false            // set by hand if you want this
+        filterFn = \(x:os.DirEntry) { true }
+        filterDirs = \(x:os.DirEntry) { true }
+        orderFn = \(x:list(os.DirEntry)) { x }
+        levels = []
+        started = false
+        //unless(self.done()) curval = next()
+    }
+}
+
+// code to handle a list(byte) representing a filename as a triple of the directory, base name, extension
+val filenameParts = tuple(dir, base, extn: list(byte))
+
+// Parse a list(byte) into a triple of filenameParts. Uses last '.' for extension, last '/' for dir.
+// Parsed parts do not include the separators.
+val filenameGet = \imp(nm: list(byte)) -> filenameParts {
+    // split at index of last slash in nm and last dot in nm
+    val sinx0 = reverse(nm)[this == '/' => index]
+    val sinx = (sinx0 == nil ? -1 : nm.count - sinx0)
+    val dinx0 = reverse(nm)[this == '.' => index]
+    var dinx = (dinx0 == nil ? -1 : nm.count - dinx0)
+    var pathpart = [list(byte):], basepart = [list(byte):], xpart = [list(byte):]
+    if(sinx < 0) {
+        if(dinx < 0) basepart = nm else { basepart = nm[0...dinx-1]; xpart = nm[dinx...nm.count] }
+    } else if(dinx < 0) { pathpart = nm[0...sinx-1]; basepart = nm[sinx...nm.count]
+    } else { pathpart = nm[0...sinx-1]; basepart = nm[sinx...dinx-1]; xpart = nm[dinx...nm.count] }
+    [filenameParts: pathpart, basepart, xpart]
+}
+
+// Given filenameParts, create a list(byte) of the filename, adding '/' and '.' as needed.
+// No sanity checking is done.
+val filenamePut = \imp(parts: filenameParts) -> list(byte) {
+    var nbytes = parts.dir.count + parts.base.count + parts.extn.count
+    if(parts.dir.count > 0) nbytes += 1
+    if(parts.extn.count > 0) nbytes += 1
+    var rslt: list(byte) = zerolist(nbytes)
+    copyFrom(rslt, 0, parts.dir)
+    var ofs = parts.dir.count
+    if(parts.dir.count > 0) { rslt[ofs] = '/'; ofs += 1 }
+    copyFrom(rslt, ofs, parts.base)
+    ofs += parts.base.count
+    if(parts.extn.count > 0) { rslt[ofs] = '.'; ofs += 1 }
+    copyFrom(rslt, ofs, parts.extn)
+    rslt
 }
 
