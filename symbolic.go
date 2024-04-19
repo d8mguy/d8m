@@ -840,7 +840,11 @@ func (t *TermTL) Simplify() (retval Term) {
 					logger.Println("simplifying a typecase to the ", t.args[clznum].(*TermTT).arg0.(*Type).String(), " case")
 				}
 				retval = Simplify(t.args[clznum].(*TermTT).arg1)
+			} else if prOptimize {
+				logger.Println("NOT simplifying a typecase because didn't find clause compat with", tctyp.String())
 			}
+		} else if prOptimize {
+			logger.Println("NOT simplifying a typecase because trm type is entity")
 		}
 	}
 	return

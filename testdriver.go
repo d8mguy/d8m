@@ -168,7 +168,6 @@ func main() {
 	names2, _ := filepath.Glob("tests/*.out")
 	fmt.Println("found ", len(names0), "tests:")
 	startinx := 0 // for dbgg only
-	linesRead := 0
 	wallstart := time.Now()
 	for testinx := startinx; testinx < len(names0); testinx++ {
 		if testinx != startinx {
@@ -284,7 +283,6 @@ func main() {
 				//fmt.Println("compiling ", tcout.String())
 				qcout, qcerr := queryCompile(tcout, gblScope)
 				fd.Close()
-				linesRead += len(scanner.Linestarts)
 				unrollEachloops = false // Not sure this is right; cdriver goes the other way
 				if qcerr != nil {
 					fmt.Println("rewrite rule error:", qcerr.String())
@@ -334,7 +332,7 @@ func main() {
 			log.Fatal(err)
 		}
 		elapsed := time.Since(wallstart).Seconds()
-		fmt.Println("no errors (writing date to ./.lasttest.txt); compiled", linesRead, "lines of code in", fmt.Sprintf("%f5.2", elapsed), "seconds")
+		fmt.Println("no errors (writing date to ./.lasttest.txt); compiled", len(names0), "files in", fmt.Sprintf("%5.2f", elapsed), "seconds")
 		fmt.Fprint(f, "last successful test at", time.Now(), "\n")
 		f.Close()
 	}
