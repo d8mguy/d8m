@@ -2,7 +2,7 @@
 import go "io/fs"
 import go "os"
 val foo = \imp() {
-    val rslt = fs.Glob(os.DirFS("/Users/curtisabbott/go/src/github.com/curtisabbott/d8mingo/tests"), "bintree.*")
+    val rslt = fs.Glob(os.DirFS("tests"), "bintree.*")
     if(rslt.err != nil) exit(rslt.err)
     rslt.ok
 }

@@ -2,7 +2,9 @@ foo.txt
 tester.log
 dbg.log
 d8mqry.go
+.DS_Store
 runtests
+d8mc
 tests/*.go
 .lasttest.txt
 modules/modulesDB.json
