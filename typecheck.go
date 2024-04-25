@@ -1358,6 +1358,7 @@ func (t *TermB) Typecheck(cntt *Type, tci *TCInfo) Term {
 			if len(t.value) > i+inx+1 && t.value[i+inx+1] == '{' {
 				bldr.WriteString(t.value[i : i+inx])
 				// we've got an interpolation: scan for end, parse expr, etc.
+				// Note that this can't handle exprs with braces; noted as a bug
 				endinx := strings.Index(t.value[i+inx:], "}")
 				if endinx < 0 {
 					return tci.Error("missing close brace", t)

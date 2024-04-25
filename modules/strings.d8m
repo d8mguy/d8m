@@ -3,12 +3,13 @@
  */
 import go "strings" as gs
 
-export split, join, toLower, toUpper, toCap, toCamel, genUpper, genLower, toOrdinal, startsWith, endsWith, trimSpace
+export split, join, contains, toLower, toUpper, toCap, toCamel, genUpper, genLower, toOrdinal, startsWith, endsWith, trimSpace
 
 val join = \(strgs: list(string), inter: string) -> string { gs.Join(strgs, inter) }
 // Be careful: gs.Split doesn't return an empty string if no instances of sep in strg, it returns a singleton list of strg
 // Thus, the correct test for no separators is split.count = 1, not 0.
 val split = \(strg, sep: string) -> list(string) { gs.Split(strg, sep) }
+val contains = \(strg, substr:string) { gs.Contains(strg, substr) }
 val toLower = \(strg: string) -> string { gs.ToLower(strg) }
 val toUpper = \(strg: string) -> string { gs.ToUpper(strg) }
 

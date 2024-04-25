@@ -871,6 +871,9 @@ func (p *Parser) stmts(lBraceSeen bool, closer TokenCode) Term {
 	if pktk.code == EOF {
 		return p.recordError("unexpected eof", nil)
 	}
+	if pktk.code == RBRACE {
+		return p.recordError("unexpected closing brace", nil)
+	}
 	pos0 := pktk.pos
 	if !lBraceSeen {
 		if pktk.code != LBRACE {

@@ -165,9 +165,13 @@ func printMdbtree(tr mdbTree) {
 */
 
 // This is the function that interprets what the modulesDB directs. Given a path, split it into components,
-// search in the modulesTree, and use that to return a full path for opening the file.
+// search in the modulesTree, and use that to return a full path for opening the file. Also handle the builtin
+// interpretation of modules/xxx as meaning a module in the local modules dir.
 func modulesFullpath(path string) string {
 	compnts := strings.Split(path, "/")
+	if len(compnts) > 1 && compnts[0] == "modules" {
+		return path
+	}
 	maxdepth := len(compnts) - 1
 	curnode := &mdbNode{children: modulesTree.root}
 	found := false
@@ -1080,6 +1084,7 @@ func initPkgImports() {
 	pkgdb = append(pkgdb, pkgdbEntry{"strings",
 		[]*Symbol{makeSymbol("Builder", nil, builderT)},
 		[]*Symbol{
+			makeSymbol("Contains", makeType(TFFtn, []*Type{TypeString, TypeString}, TypeBool, true), nil),
 			makeSymbol("Index", makeType(TFFtn, []*Type{TypeString, TypeString}, TypeInt, true), nil),
 			makeSymbol("LastIndex", makeType(TFFtn, []*Type{TypeString, TypeString}, TypeInt, true), nil),
 			makeSymbol("IndexByte", makeType(TFFtn, []*Type{TypeString, TypeByte}, TypeInt, true), nil),
@@ -1220,12 +1225,6 @@ func loadFile(fullpath string, asModule bool, tci *TCInfo) (tcout Term) {
 	// try opening locally and if not, globally
 	if asModule {
 		fullpath = modulesFullpath(fullpath)
-	}
-	if n > 8 && fullpath[:8] == "modules/" {
-		fd, err = os.Open(fullpath)
-		if err != nil {
-			fullpath = SrcPath + fullpath
-		}
 	}
 	fd, err = os.Open(fullpath)
 	if err != nil {
