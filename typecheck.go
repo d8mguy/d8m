@@ -1209,7 +1209,7 @@ func (t *Token) Typecheck(cntt *Type, tci *TCInfo) Term {
 					return makeTermT(Gdref, sym, tci.typecaseType, t.pos, t.pos)
 				}
 			} else if cntt == TypeByte && symtyp == TypeInt && sym.plist.Find("var") == nil {
-				if sym.binding.Tag() == Intlit {
+				if sym.binding != nil && sym.binding.Tag() == Intlit {
 					iv := sym.binding.Plist().Find("intval").(int)
 					if iv >= 0 && iv < 256 {
 						return makeTermT(Gdref, sym, TypeByte, t.pos, t.pos)
@@ -1219,19 +1219,9 @@ func (t *Token) Typecheck(cntt *Type, tci *TCInfo) Term {
 			if cntt == nil || symtyp.compat(cntt, &seen) {
 				return symterm
 			}
-			if cntt == TypeByte && sym.dtype == TypeInt {
-				bdg, ok := sym.binding.(*TermB)
-				if ok {
-					iv := bdg.plist.Find("intval").(int)
-					if iv >= 0 && iv < 256 {
-						return t
-					}
-				}
-			} else {
-				cvtd := tryAutocvt(symtyp, cntt, tci)
-				if cvtd != nil {
-					return makeFuncall(cvtd, []Term{sym}, cvtd.dtype.v.(*Ftntype).rettype, nil)
-				}
+			cvtd := tryAutocvt(symtyp, cntt, tci)
+			if cvtd != nil {
+				return makeFuncall(cvtd, []Term{sym}, cvtd.dtype.v.(*Ftntype).rettype, nil)
 			}
 			upc++
 			if upc == upcount {
@@ -2443,6 +2433,7 @@ func (t *TermTT) Typecheck(cntt *Type, tci *TCInfo) Term {
 					return possErr
 				}
 			}
+			tci.ClearErrors()
 			return filt1interpn
 		}
 		rvi := makeFuncall(SynthToken(IDENT, "rvalindex"), []Term{a0, a1}, nil, t)
@@ -3507,10 +3498,31 @@ func (t *TermL) Typecheck(cntt *Type, tci *TCInfo) Term {
 				smashDtype(epart, TypeNothing)
 			} else if ttype == TypeExit {
 				ttype = etype
-			} else if ttype == TypeByte && etype == TypeInt {
-				etype = ttype
-			} else if !(ttype.compat(etype, &seen) || etype == TypeExit) {
-				return tci.Error(fmt.Sprintf("incompatible then and else part: %s versus %s", ttype.String(), etype.String()), t)
+			} else {
+				cv0 := tryAutocvt(ttype, etype, tci)
+				if cv0 != nil {
+					ttype = etype
+					if tpart.Tag() != Stmts {
+						tpart = makeFuncall(cv0, []Term{tpart}, etype, nil)
+					} else {
+						tpart0 := tpart.(*TermL)
+						laststmt := tpart0.args[len(tpart0.args)-1]
+						tpart0.args[len(tpart0.args)-1] = makeFuncall(cv0, []Term{laststmt}, etype, nil)
+					}
+				} else {
+					cv0 = tryAutocvt(etype, ttype, tci)
+					if cv0 != nil {
+						if epart.Tag() != Stmts {
+							epart = makeFuncall(cv0, []Term{epart}, ttype, nil)
+						} else {
+							epart0 := epart.(*TermL)
+							laststmt := epart0.args[len(epart0.args)-1]
+							epart0.args[len(epart0.args)-1] = makeFuncall(cv0, []Term{laststmt}, ttype, nil)
+						}
+					} else if !(ttype.compat(etype, &seen) || etype == TypeExit) {
+						return tci.Error(fmt.Sprintf("incompatible then and else part: %s versus %s", ttype.String(), etype.String()), t)
+					}
+				}
 			}
 		}
 		args := []Term{cond, tpart}
