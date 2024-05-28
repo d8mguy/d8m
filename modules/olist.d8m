@@ -104,7 +104,7 @@ val olist = \typegen(T::entity, U::ordered, oextract:\(T)->U) {
 		    if(inx >= 0 && oextract(x[inx]) == oelt) x[inx] else nil
 		}
 		// Is same as get except you know the match will succeed
-		method getOK = \(oelt: U) { always(aa~get(oelt), aa != nil) }
+		method getOK = \(oelt: U) { x[indexA(oelt)] }
 
 		// returns the greatest list elt <= T or nil if either list is empty or T is < the first elt of the list.
 		method before = \(elt: T) {

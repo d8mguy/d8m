@@ -219,7 +219,7 @@ given(T, TT::entity) {
         val IV1, IV2: xprsym, S0, S1, S2, S3, S4: xprstmts, L0: xprterm
         matchquery("{S0; each(IV1^L0) S1; S2; each(IV2^L0) S3; S4}")
         val CFX = pattern([mkterm(:break), mkterm(:return, _), mkterm(:continue)])
-        skipIf(!disjoint(mods(S1), uses(S2) + uses(S3)) || !disjoint(mods(S2), uses(S3)) || contains(CFX, S1, S3))
+        skipIf(!disjoint(mods(S1), uses(S2) + uses(S3)) || L0 in mods(S2) || !disjoint(mods(S2), uses(S3)) || contains(CFX, S1, S3))
         skipIf(anyConnected(S1) && anyConnected(S3))
         val S3p = mkstmts([S1, renameLocals(S1, S3.subst([IV2], [IV1]))])
         parseRW("{S0; S2; each(IV1^L0) S3p; S4 }")
