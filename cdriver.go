@@ -158,7 +158,7 @@ func main() {
 			f.Close()
 			if *flagDbg {
 				// gofmt before go build so that line numbers line up
-				exec.Command("/usr/local/go/bin/gofmt", "-r", `(a)->a`, "-w", outfilename).CombinedOutput()
+				exec.Command("/usr/local/go/bin/gofmt", "-w", outfilename).CombinedOutput()
 			}
 			out, _ := exec.Command("/usr/local/go/bin/go", "build", outfilename).CombinedOutput()
 			outstrg := string(out)

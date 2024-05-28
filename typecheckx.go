@@ -964,10 +964,12 @@ func (t *TermTL) specialFuncall(ftnname string, argcount int, cntt *Type, tci *T
 				// TC'g all of these without backtracking is a challenge but I always prefer that if possible. So here,
 				// I'm going to assume that any cast to a ftn type is a multibound disambig. Otherwise, check without cntts
 				// and see if ortype or stmapping works via local checks.
-				if tgttype0.family == TFFtn {
-					return t.args[0].Typecheck(tgttype0, tci)
+				// Late addition: zerolist calls need to be castable, so I'm adding a special case for that
+				whatsCast := t.args[0]
+				if tgttype0.family == TFFtn || callingNamed(whatsCast, "zerolist") {
+					return whatsCast.Typecheck(tgttype0, tci)
 				}
-				xpr := t.args[0].Typecheck(nil, tci)
+				xpr := whatsCast.Typecheck(nil, tci)
 				xprt := xpr.Tag()
 				if xprt == ErrorTag {
 					return xpr

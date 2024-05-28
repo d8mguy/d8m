@@ -352,14 +352,33 @@ func tcImport(path, mname string, tci *TCInfo, t *TermTT) Term {
 			return tci.Error(fmt.Sprintf("missing export statement in file %s", path), t)
 		}
 		exportlist := xpstmt.(*TermL).args
+		exportStrings := make([]string, 0, len(exportlist))
+		for _, trm := range exportlist {
+			strg := ""
+			if trm.Tag() == Ident {
+				strg = trm.(*Token).val
+			} else {
+				strg = trm.(*TermL).args[0].(*Token).val
+			}
+			// check for dups in exportlist
+			inx := binsearchStrings(exportStrings, strg)
+			if inx < 0 || exportStrings[inx] != strg {
+				exportStrings = insertStrings(exportStrings, inx, strg)
+			} else {
+				return tci.Error(fmt.Sprintf("duplicate export declaration: %s", strg), t)
+			}
+		}
 		melted := mname == ""
 		indices := make([]int, 0, len(exportlist))
-		scopex := importScope.entries
+		impList := importScope.entries
 		qiv := &QIVal{importScope, true, 1, path, mname}
-		// the following allows these symbols to be externed in the backend if necessary
-		for _, sx := range scopex {
+		// the following allows these symbols to be externed in the backend if necessary. The necessity can arise when
+		// an an exported entity that uses unexported ones ends up in the compiled program.
+		for _, sx := range impList {
 			sx.sym.plist.Add("qisym", qiv)
 		}
+		// handle exports qualified by types (will be *TermL) as well as the usual case (*Token)
+		// Exported symbols go onto list indices, which has indices in importScope
 		for _, xported := range exportlist {
 			var ident string
 			var typ *Type
@@ -377,16 +396,19 @@ func tcImport(path, mname string, tci *TCInfo, t *TermTT) Term {
 			default:
 				panic("can't happen")
 			}
-			scpinx = scopex.Index(ident)
-			if !(scpinx < len(scopex) && scopex[scpinx].sym.ident == ident) {
-				return tci.Error(fmt.Sprintf("%s not found", ident), t)
+			scpinx = impList.Index(ident)
+			if !(scpinx < len(impList) && impList[scpinx].sym.ident == ident) {
+				// exporting an undefined symbol is an error but the std Error method gets line info wrong at this point, so bypass it
+				errtrm := makeErrorTerm(fmt.Sprintf("module %s exports %s but does not define it", path, ident), 0, 10)
+				tci.errors = append(tci.errors, errtrm)
+				return errtrm
 			}
 			// in the following loop, export 1 or all of the symbols with same ident
 			found := false
-			for ; scpinx < len(scopex) && scopex[scpinx].sym.ident == ident; scpinx++ {
+			for ; scpinx < len(impList) && impList[scpinx].sym.ident == ident; scpinx++ {
 				if typ != nil {
 					seen := []*Type{}
-					if scopex[scpinx].sym.dtype.compat(typ, &seen) {
+					if impList[scpinx].sym.dtype.compat(typ, &seen) {
 						found = true
 					}
 				}
@@ -401,16 +423,17 @@ func tcImport(path, mname string, tci *TCInfo, t *TermTT) Term {
 				return tci.Error(fmt.Sprintf("can't find symbol %s matching %s", ident, typ.String()), t)
 			}
 		}
-		sort.Ints(indices) // now it'll be in ascending order
-		j := len(indices) - 1
-		top := len(scopex) - 1
-		for i := top; i >= 0; i-- {
-			if j >= 0 && indices[j] == i {
-				j -= 1
-			} else {
-				copy(scopex[i:top], scopex[i+1:top+1])
-				top -= 1
-				scopex = scopex[0 : top+1]
+		// get the exported symbols in ascending order
+		scopex := make(SymXDict, 0, len(indices))
+		sort.Ints(indices)
+		indicesIndex := 0
+		for syminx, symx := range impList {
+			if syminx == indices[indicesIndex] {
+				scopex = append(scopex, symx)
+				indicesIndex += 1
+				if indicesIndex >= len(indices) {
+					break
+				}
 			}
 		}
 		importScope.entries = scopex

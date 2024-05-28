@@ -720,6 +720,9 @@ func funcallTypeSpecial(fcall *TermTL, trmId string, tci *TCInfo) Term {
 // Here, we handle lookup in the scope stack provided by tci.
 func (t *Token) check4Type(tci *TCInfo) Term {
 	if tci.typeInDef != nil && tci.typeInDef.ident == t.val {
+		if tci.typeInDef.binding == nil {
+			tci.typeInDef.binding = makeType(TFUnknown)
+		}
 		tci.typeInDef.binding.Plist().Add("rectypeMentioned", true)
 		return tci.typeInDef.binding
 	}
@@ -992,7 +995,8 @@ func (t *TermL) check4Type(tci *TCInfo) (retval Term) {
 			// enforce set rule on variant types
 			for _, otyp := range setotypes {
 				seen := []*Type{}
-				if typ0.equal(otyp, &seen) {
+				// the TFUnknown exception is wrong, but there to allow multiple undefined types to be included, happens with recursive types
+				if typ0.equal(otyp, &seen) && typ0.family != TFUnknown {
 					return tci.Error(fmt.Sprintf("type %s occurs twice", typ0.String()), t)
 				}
 			}
@@ -1422,7 +1426,7 @@ func (t *TermL) tcDecl(tci *TCInfo, isVar bool) Term {
 		}
 	}
 	idtkn := t.args[0].(*Token)
-	//if idtkn.val == "olist" {
+	//if idtkn.val == "pt2" {
 	//	fmt.Print()
 	//}
 	givencxt := tci.cxt.FindItem("givenscope") // will be nil or a *Scope
@@ -1833,12 +1837,16 @@ func (t *TermT) Typecheck(cntt *Type, tci *TCInfo) Term {
 		if a0.Tag() == ErrorTag {
 			return a0
 		} else {
-			if !(cntt == nil) {
-				a0t := a0.Dtype()
+			a0t := a0.Dtype()
+			if cntt != nil {
 				seen := []*Type{}
 				if !a0t.compat(cntt, &seen) {
-					return tci.Error("unary - requires a numeric argument", t)
+					return tci.Error("unary - incompatible with "+cntt.String(), t)
 				}
+			}
+			// negate is only defined on numbers
+			if a0t != TypeInt && a0t != TypeFloat {
+				return tci.Error("unary - requires a numeric argument", t)
 			}
 			t.arg0 = a0
 			t.dtype = t.arg0.Dtype()
@@ -3190,7 +3198,7 @@ func (t *TermL) tcFunlit(cntt *Type, tci *TCInfo) Term {
 		return retcheck
 	}
 	// If lastBodyStmt is a loop without a return stmt, this is an error.
-	if retcheck != TypeNothing && (lastBodyStmt != nil && lastBodyStmt.Tag() == LoopStmt) {
+	if retcheck != TypeNothing && (lastBodyStmt != nil && (lastBodyStmt.Tag() == LoopStmt || lastBodyStmt.Tag() == EachStmt)) {
 		hasReturnWF := func(trm Term, stt interface{}) int {
 			switch trm0 := trm.(type) {
 			case *Symbol: // assume no asgnmt stmt in local defn bindings, so don't pursue
@@ -4321,7 +4329,7 @@ func (t *TermTL) TCFuncall(cntt *Type, tci *TCInfo) (retval Term) {
 					if sym != nil {
 						// we got a match; make sure to include the full access path to the function
 						fntyp := atrb.dtype
-						if dotrm0.Tag() == SymbolTag {
+						if dotrm0.Tag() == SymbolTag || (dotrm0.Tag() == Gdref && dotrm0.(*TermT).arg0.Tag() == SymbolTag) {
 							tmp := makeTermL(Symchain, []Term{dotrm0, sym}, fntyp, dotrm0.First(), dotrm0.Final())
 							dotrm0 = tmp
 						} else { // has to be Symchain (?)

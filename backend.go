@@ -1619,7 +1619,12 @@ func (iln *inlineInfo) inlineOne(funi *Funinst, args []Term, rettype *Type) Term
 					if tg == SymbolTag {
 						actl0 = actl.(*TermL).args[0].(*Symbol)
 					} else if tg == Gdref {
-						actl0 = actl.(*TermL).args[0].(*TermT).arg0.(*Symbol)
+						inGdref := actl.(*TermL).args[0].(*TermT).arg0
+						if inGdref.Tag() == SymbolTag {
+							actl0 = inGdref.(*Symbol)
+						} else {
+							actl0 = inGdref.(*TermL).args[0].(*Symbol) // better be a symchain
+						}
 					}
 				} else {
 					actl0 = actl.(*Symbol)
@@ -2277,7 +2282,7 @@ func (qci *QCInfo) addExtern(sym *Symbol) {
 		id0 := identifierOutOfScope(gblScope, nil, sym.ident, sym)
 		sym.ident = id0
 	}
-	if sym.binding.Tag() == FuninstTag {
+	if sym.binding != nil && sym.binding.Tag() == FuninstTag {
 		funi := sym.binding.(*Funinst)
 		for _, fa := range funi.funargs {
 			id0 := identifierOutOfScope(gblScope, nil, fa.ident, fa)
@@ -2524,6 +2529,9 @@ func (qci *QCInfo) markUsedType(typ *Type, tnm0 string) {
 // Collect named types into the usedTypes map.
 // While we're at it, get ready for any generic fns and uses of typecase.
 func (qci *QCInfo) namedTypes(trm Term) {
+	if trm == nil {
+		return
+	}
 	// ensure that named types get recorded in the usedTypes symbolSlice
 	var collectType func(typ *Type, seen *[]*Type)
 	collectType = func(typ *Type, seen *[]*Type) {
@@ -3680,7 +3688,7 @@ func (qci *QCInfo) OOLXforms(trm Term) (retval Term) {
 					fntyp := sym.dtype.v.(*Ftntype)
 					realftn := fntyp.fmlargs[0].methodLookup(sym.ident)
 					if realftn == nil {
-						log.Fatal("whoops, couldn't find the affordance method")
+						log.Fatal("whoops, couldn't find the affordance method: " + sym.ident)
 					}
 					symbdg = realftn.binding
 					fn0.trm = realftn
@@ -4637,7 +4645,7 @@ func (qci *QCInfo) gencodeFtn(fnsym *Symbol, bldr *strings.Builder) {
 }
 
 // Put out go text to generate a "zero value" of any type.
-func (qci *QCInfo) zvGen(typ *Type, bldr *strings.Builder, inDecl bool) {
+func (qci *QCInfo) zvGen(typ *Type, bldr *strings.Builder, seen *[]*Type, inDecl bool) {
 	otyp := typ
 	if typ.family == TFPtr {
 		typ = typ.v.(*Type)
@@ -4649,6 +4657,17 @@ func (qci *QCInfo) zvGen(typ *Type, bldr *strings.Builder, inDecl bool) {
 		if itemExists(typ, "interfaceType") {
 			bldr.WriteString("nil")
 		} else if typ.family == TFTuple {
+			// we need to avoid calls on mutually recursive types
+			for i := 0; seen != nil && i < len(*seen); i++ {
+				if typ == (*seen)[i] {
+					bldr.WriteByte('&')
+					qci.writeType(typ, false, bldr)
+					bldr.WriteByte('{')
+					bldr.WriteByte('}')
+					return
+				}
+			}
+			*seen = append(*seen, typ)
 			if otyp.family == TFPtr {
 				bldr.WriteByte('&')
 			}
@@ -4662,37 +4681,13 @@ func (qci *QCInfo) zvGen(typ *Type, bldr *strings.Builder, inDecl bool) {
 					}
 					bldr.WriteString(a.ident)
 					bldr.WriteByte(':')
-					qci.zvGen(a.dtype, bldr, false)
+					qci.zvGen(a.dtype, bldr, seen, false)
 					needsep = true
 				}
 			}
 			bldr.WriteByte('}')
-			//anyEmbeddedTuple := false
-			//for _, a := range typ.v.(*Tupletype).attribs {
-			//	if a.dtype.family == TFPtr {
-			//		anyEmbeddedTuple = true
-			//		break
-			//	}
-			//}
-			//if anyEmbeddedTuple {
-			//	atrbs := typ.v.(*Tupletype).attribs
-			//	lastinx := len(atrbs)-1
-			//	bldr.WriteByte('{')
-			//	for i, a := range atrbs {
-			//		typ0 := a.dtype
-			//		if typ0.family == TFPtr {
-			//			typ0 = typ0.v.(*Type)
-			//		}
-			//		qci.zvGen(trm, typ0, bldr, false)
-			//		if i < lastinx {
-			//			bldr.WriteByte(',')
-			//		}
-			//	}
-			//	bldr.WriteByte('}')
-			//} else {
-			//}
 		} else {
-			// very hackish but will do for a first pass
+			// very hackish handling of Gomap but will do for a first pass
 			bldr.WriteString(" make(")
 			qci.writeType(typ, false, bldr)
 			bldr.WriteString(", 10)")
@@ -4711,7 +4706,8 @@ func (qci *QCInfo) gencodeVar(sym *Symbol, bldr *strings.Builder) {
 	bldr.WriteByte(' ')
 	if sym.binding == nil || sym.binding.Tag() == ZeroValue {
 		qci.writeType(sym.dtype, false, bldr)
-		qci.zvGen(sym.dtype, bldr, true)
+		seen := []*Type{}
+		qci.zvGen(sym.dtype, bldr, &seen, true)
 	} else {
 		if sym.dtype.family == TFPtr && symbolNamed(sym.binding, "nil") {
 			qci.writeType(sym.dtype, false, bldr)
@@ -5520,7 +5516,8 @@ func (qci *QCInfo) gencode0(trm Term, bldr *strings.Builder, shouldDeref bool) {
 				bldr.WriteByte(')')
 			}
 		} else if trm0.kind == ZeroValue {
-			qci.zvGen(trm0.dtype, bldr, false)
+			seen := []*Type{}
+			qci.zvGen(trm0.dtype, bldr, &seen, false)
 		} else if trm0.kind != AssertStmt {
 			panic("unwritten")
 		}
@@ -5885,12 +5882,12 @@ func genericWorkfn(trm Term, s interface{}) int {
 // These are codegen'd as their iaaf's, not in this separate manifestation. The smash semantics of backendFixups and the
 // like ensure that this arrangement does what we want.
 func (qci *QCInfo) optimize(sym *Symbol, gscope *Scope) Term {
-	if sym.ident == "" { // we've already seen this one
+	if sym.ident == "" || sym.binding == nil { // we've already seen this one
 		return nil
 	}
 	bdg := sym.binding
 	qci.optimizing = sym
-	if bdg == nil || bdg.Tag() == TypeTag {
+	if bdg.Tag() == TypeTag {
 		panic("should not happen")
 	}
 	lithook := false

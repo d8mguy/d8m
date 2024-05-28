@@ -1904,6 +1904,10 @@ func defaultValue(typ *Type, seen *[]*Type) (retval Term) {
 		retval = makeTermL(Litform0, []Term{}, typ, Pos(-1), Pos(-1))
 	case TFBool:
 		retval = FalseLiteral
+	case TFOrtype:
+		if typ.isNilposs() {
+			return nilEntity
+		}
 	case TFSpace:
 		if typ == biScope["bits64"][0].binding {
 			retval = makeIntlit(0)
@@ -1948,7 +1952,7 @@ func (smi *STMapInfo) lithookXfm(trm *TermTL) Term {
 				seen := make([]*Type, 2)
 				tmp := defaultValue(a.dtype, &seen)
 				if tmp == nil {
-					panic("don't know how to fill slot")
+					panic("don't know how to fill slot for " + attribs[i].ident)
 				}
 				attribVals[i] = tmp
 			}

@@ -94,7 +94,9 @@ val actionItem = extend tuple(action: actions, v: ortype(m: string, inx: integer
 //
 // Added late: dprs slot is to detect shared synthd NTs
 val bblockT = extend tuple(instrux: list(actionItem), NTname: string, dprs: list(dottedPR)) where {
-    method lithook = \mod(ix: list(actionItem), nm: string) { instrux = ix; NTname = nm; dprs = [] }
+    method lithook = \mod(ix: list(actionItem), nm: string) {
+        instrux = ix; NTname = nm; dprs = []
+    }
     method lithook = \mod(nm: string) { instrux = []; NTname = nm; dprs = [] }
     method stringify = \() {
         val istrgs = strings.join(instrux.{ stringify(this) }, `;`)
@@ -941,7 +943,7 @@ val parseState = extend tuple(langdef: langDefn) where {
         val errstrg = cxt.getToken(bytes, langdef.lexer)
         if(tokenCheck != nil) tokenCheck(self)
         if(errstrg != "") setError(errstrg)
-//        println("getToken:", cxt.toktype, cxt.tknval)
+        //println("nxToken:", cxt.toktype, cxt.tknval)
     }
     assert noInline(nxToken)
 
@@ -952,15 +954,18 @@ val parseState = extend tuple(langdef: langDefn) where {
     // but we simply return.)
     method scanBracket = \mod(startIndex: integer) {
         var brktDepths = (0...langdef.lexer.brackets.count/2).{ index == startIndex ? 1 : 0 }
+        //println("starting scanBracket, tkn=", cxt.tknval, "depths=", brktDepths)
         while(sigma(brktDepths) > 0 && cxt.toktype != "end") {
             nxToken()
+            //println("tkn=", cxt.tknval)
             if(cxt.toktype == "brkt") {
                 val brktInx0 = always(x~langdef.lexer.brackets[this == cxt.tknval => index], x != nil)
                 val incr = (brktInx0 % 2 == 0 ? 1 : -1)
                 brktDepths[brktInx0/2] += incr
+                //println("update brktDepths:", brktDepths)
             }
         }
-        nxToken()       // skip closing brkt
+        //println("returning from scanBracket, tkn=", cxt.tknval)
     }
 
     // makea the offset available, just a convenience since cxt is not private
@@ -1249,12 +1254,13 @@ val scanStmt = \mod(ps: parseState) -> integer {
     // handle cases: fixed token, "expr", "stmt", else the "subroutine" form of NT. Conditions vfyd before calling this
     // and the what arg has been run through nonTerminalString.
     val scanStep = \(what: string) -> nothing {
-        //println("scanStep(#{what}) @ ", ps.cxt.tknval)
         if(ps.matchTerminal(what)) ps.nxToken()
         else if(what == "expr") scanExpr()
         else if(what == "stmt") scanOneStmt()
         else {
-            val nt = ps.langdef.allNonterms.getOK(ps.langdef.nonTerminalString(what))
+            val nts = ps.langdef.nonTerminalString(what)
+            val nt = ps.langdef.allNonterms.getOK(nts)
+            //println("scanStep(#{what}; #{nts}) @ ", ps.cxt.tknval, nts, nt)
             scanBlock(ps.langdef.bblocks[nt.binx], "")
         }
     }
@@ -1368,6 +1374,31 @@ val scanStmt = \mod(ps: parseState) -> integer {
     // assume we've peeked to the token following whatever we scanned, unless we're at end of string. Therefore,
     // calculate the ending position by subtracting current token size from cxt.ofs
     ps.cxt.toktype == "end" ? ps.cxt.ofs : ps.cxt.ofs - ps.cxt.tknval.count
+}
+
+// ScanTo provides a different kind of fast scan, less tied to the grammar than scanStmt.
+// Scan to the first occurrence of any of the tokens in tkvals, which must be string valued (ie not bracket, separator, etc.)
+// If bcheck is true, ignore tokens inside balanced brackets, similar to scanStmt. Otherwise, straight scan for tkvals.
+// Like scanStmt, moves parseState.cxt but returns nothing since new position is easily recoverable and -1 makes no sense.
+val scanTo = \mod(ps: parseState, tkvals:list(string), bcheck:boolean) -> nothing {
+    val start = ps.cxt.ofs
+    //println("starting scanTo...")
+    loop {
+        ps.nxToken()
+        val tkn0 = ps.cxt
+        //println("tk:", tkn0.tknval)
+        if(tkn0.toktype == "end") break
+        if(tkn0.tknval in tkvals) {
+            //ps.cxt = ps.prevtkn
+            if(ps.cxt.ofs - start < 2) exit("scanTo: #{tkn0.tknval}, #{ps.prevtkn.tknval}")
+            //println("scanTo skips \n*****\n", cvt(ps.bytes[start...ps.cxt.ofs], string), "\n*****\n")
+            break
+        }
+        if(bcheck && tkn0.toktype == "brkt") {
+            val brktinx = always(x~ps.langdef.lexer.brackets.index(tkn0.tknval), x!=nil)/2
+            ps.scanBracket(brktinx)
+        }
+    }
 }
 
 // ParseStmts parses a list of stmts and returns a list(Term). It's the appropriate wrapper for parsing the entirety of
