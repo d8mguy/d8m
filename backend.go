@@ -1623,7 +1623,10 @@ func (iln *inlineInfo) inlineOne(funi *Funinst, args []Term, rettype *Type) Term
 						if inGdref.Tag() == SymbolTag {
 							actl0 = inGdref.(*Symbol)
 						} else {
-							actl0 = inGdref.(*TermL).args[0].(*Symbol) // better be a symchain
+							tmp := inGdref.(*TermL).args[0]
+							if tmp.Tag() == SymbolTag {
+								actl0 = inGdref.(*TermL).args[0].(*Symbol)
+							}
 						}
 					}
 				} else {
@@ -3361,21 +3364,20 @@ func (iln *inlineInfo) multiretSubstn(oldsym0, mrstmt0 Term) {
 func typeAssertSubstn(stmts []Term) {
 	mrstmt0 := stmts[0].(*TermL)
 	typasrt := mrstmt0.args[2].(*TermT)
-	b4 := make([]Term, 2)
-	aftr := make([]Term, 2)
+	b4 := make([]Term, 1, 2)
+	aftr := make([]Term, 1, 2)
 	ort := typasrt.arg0.Dtype()
 	b4[0] = makeTermT(Gdref, typasrt.arg0, typasrt.dtype, Pos(-1), Pos(-1))
 	aftr[0] = mrstmt0.args[0] // subst the validated type that the type assert decl checks on
 	vnts := ort.v.(*Ortype).variants
-	if len(vnts) != 2 {
-		panic("shouldn't happen")
+	if len(vnts) == 2 {
+		vinx := 0
+		if typasrt.dtype == vnts[0].dtype {
+			vinx = 1
+		}
+		b4 = append(b4, makeTermT(Gdref, typasrt.arg0, vnts[vinx].dtype, Pos(-1), Pos(-1)))
+		aftr = append(aftr, makeTermT(TypeAssert, typasrt.arg0, vnts[vinx].dtype, Pos(-1), Pos(-1)))
 	}
-	vinx := 0
-	if typasrt.dtype == vnts[0].dtype {
-		vinx = 1
-	}
-	b4[1] = makeTermT(Gdref, typasrt.arg0, vnts[vinx].dtype, Pos(-1), Pos(-1))
-	aftr[1] = makeTermT(TypeAssert, typasrt.arg0, vnts[vinx].dtype, Pos(-1), Pos(-1))
 	for i, s := range stmts[1:] {
 		stmts[i+1] = runSubstn(b4, aftr, s, false)
 	}
