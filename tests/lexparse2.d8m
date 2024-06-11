@@ -116,7 +116,7 @@ val driver = \imp() {
         val tkn = ps.cxt.tknval
         val b4 = ps.cxt.ofs - tkn.count
         if(tkn == "css" || tkn == "javascript") {
-            ps.scanStmt()
+            ps.scanTo(["trnsition", "state"], true)
             val after = ps.prevtkn.ofs
             val strgform = b4 <= after ? cvt(ps.bytes[b4...after], string) : "!!!!!"
             println("start: #{b4}; end: #{after}", strgform)

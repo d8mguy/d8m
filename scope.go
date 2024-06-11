@@ -2177,7 +2177,8 @@ func (smi *STMapInfo) visit(trm Term) Term {
 					// here, we've seen origsym one or more times and may have mapped it >1 time
 					cursv := sv
 					for ; cursv != nil; cursv = cursv.next {
-						if ntyp.Equal(cursv.post.Dtype()) {
+						seen := []*Type{}
+						if cursv.post.Dtype().compat(ntyp, &seen) {
 							//fmt.Println("symdict [visit symbol] returns copy of ", origsym.ident, ":", origsym.dtype.String())
 							return cursv.post
 						}
