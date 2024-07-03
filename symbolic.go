@@ -324,7 +324,7 @@ func (t *TermL) Simplify() (retval Term) {
 			atrbs := root.dtype.v.(*Tupletype).attribs
 			inx := -1
 			for i, a := range atrbs {
-				if a == atrb {
+				if a == atrb || (a.ident == atrb.ident && a.dtype.Equal(atrb.dtype)) {
 					inx = i
 					break
 				}

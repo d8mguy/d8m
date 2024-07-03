@@ -818,6 +818,15 @@ func (cui *cleanupInfo) pass1(trm Term) {
 					cui.addMod(trm0.args[2].(*Symbol))
 				}
 			}
+			// The following travesty is to fix a problem with swapping index elts of a list.
+			// It shows a need to do more serious CDFA in order to do this correctly.
+			if callingNamed(trm0, "lvalindex") && trm0.args[2].Tag() == SymbolTag {
+				sym0 := trm0.args[2].(*Symbol)
+				entry := cui.symdict[sym0]
+				if entry != nil {
+					entry.disabled = 1
+				}
+			}
 		}
 		// Check for cases where we shouldn't move defns across time revealers. This is hackish but not too bad IMO.
 		// The idea is to disable mvmt of any unused local defined prior to the time revealing stmt. If it's already dead
@@ -1703,9 +1712,21 @@ func (iln *inlineInfo) inlineOne(funi *Funinst, args []Term, rettype *Type) Term
 }
 
 func hasReturn(trm Term) bool {
-	if trm.Tag() == Stmts {
-		ss := trm.(*TermL)
-		trm = ss.args[len(ss.args)-1]
+	if trm.Tag() == Stmts || trm.Tag() == LoopStmt {
+		var ss *TermL
+		if trm.Tag() == Stmts {
+			ss = trm.(*TermL)
+		} else {
+			ss = trm.(*TermT).arg0.(*TermL)
+		}
+		for _, s := range ss.args {
+			if hasReturn(s) {
+				return true
+			}
+		}
+	} else if trm.Tag() == IfStmt {
+		trm0 := trm.(*TermL)
+		return hasReturn(trm0.args[1]) || (len(trm0.args) == 3 && hasReturn(trm0.args[2]))
 	}
 	return trm.Tag() == ReturnStmt
 }
@@ -2284,6 +2305,9 @@ func (qci *QCInfo) addExtern(sym *Symbol) {
 	if qci.postmapGbls.findsym(sym) < 0 {
 		id0 := identifierOutOfScope(gblScope, nil, sym.ident, sym)
 		sym.ident = id0
+	}
+	if prOptimize {
+		logger.Println("adding extern ", sym.ident)
 	}
 	if sym.binding != nil && sym.binding.Tag() == FuninstTag {
 		funi := sym.binding.(*Funinst)
@@ -3815,12 +3839,13 @@ func (qci *QCInfo) OOLXforms(trm Term) (retval Term) {
 			return iln.deconstructTuple(trm.(*TermT).arg0.(*Symbol), trm.Tag())
 		}
 	} else if (tg == IfStmt || tg == Ifcase || tg == Typecase) && trm.Dtype() != TypeNothing {
-		disable := false
+		ok2go := true
 		if tg == IfStmt {
 			trml := trm.(*TermL)
-			disable = hasReturn(trml.args[1]) && hasReturn(trml.args[2])
+			// note that if dtype isn't nothing, it should be ITE, not just else.
+			ok2go = !(hasReturn(trml.args[1]) || hasReturn(trml.args[2]))
 		}
-		if !disable {
+		if ok2go {
 			return iln.ifexpr2go(trm)
 		}
 	} else if tg == EachStmt {
@@ -5276,7 +5301,7 @@ func (qci *QCInfo) genFuncall(trm0 *TermTL, bldr *strings.Builder) {
 			} else {
 				qci.writeType0(rettype, false, bldr)
 				bldr.WriteByte('(')
-				qci.gencode0(trm0.args[0], bldr, false)
+				qci.gencode0(trm0.args[0], bldr, true)
 				bldr.WriteByte(')')
 			}
 		}
@@ -5911,7 +5936,7 @@ func (qci *QCInfo) optimize(sym *Symbol, gscope *Scope) Term {
 			simple = true
 			for _, x := range bdg.(*TermL).args {
 				_, tb0 := x.(*TermB)
-				if !(tb0 || x.Tag() == SymbolTag) {
+				if !tb0 {
 					simple = false
 					break
 				}
@@ -6090,7 +6115,7 @@ func queryCompile(trm Term, gscope *Scope) (contents string, errterm Term) {
 			logger.Println("post-optimize: ", qci.externs[extinx].binding.String())
 		}
 	}
-	if prOptimize {
+	if prTiming {
 		logger.Println("time after optimzn:", time.Now().Format(time.StampNano))
 	}
 	//prExterns("after fixups: ", qci.externs)
@@ -6106,23 +6131,23 @@ func queryCompile(trm Term, gscope *Scope) (contents string, errterm Term) {
 		}
 		qci.gomethods[gminx] = gmthd
 	}
-	if prOptimize {
+	if prTiming {
 		logger.Println("time after gomethods:", time.Now().Format(time.StampNano))
 	}
 	qci.backendFixups()
-	if prOptimize {
+	if prTiming {
 		logger.Println("time after backendFixups:", time.Now().Format(time.StampNano))
 	}
 	qci.pointerize()
-	if prOptimize {
+	if prTiming {
 		logger.Println("time after ptrz:", time.Now().Format(time.StampNano))
 	}
 	qci.rename2go()
-	if prOptimize {
+	if prTiming {
 		logger.Println("time after rename2go:", time.Now().Format(time.StampNano))
 	}
 	contents = qci.gencode()
-	if prOptimize {
+	if prTiming {
 		logger.Println("time after codegen:", time.Now().Format(time.StampNano))
 	}
 	return

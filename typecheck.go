@@ -1426,7 +1426,7 @@ func (t *TermL) tcDecl(tci *TCInfo, isVar bool) Term {
 		}
 	}
 	idtkn := t.args[0].(*Token)
-	//if idtkn.val == "pt2" {
+	//if idtkn.val == "runTerm" {
 	//	fmt.Print()
 	//}
 	givencxt := tci.cxt.FindItem("givenscope") // will be nil or a *Scope
@@ -2025,7 +2025,7 @@ func (t *TermTT) tcExtend(tci *TCInfo) Term {
 	extendedLocals := make([]*Symbol, 0, 2)
 	for _, symx := range body.(*TermL).scope.entries {
 		bdg := symx.sym.binding
-		if bdg.Tag() != TypeTag && bdg.Dtype().family == TFFtn {
+		if bdg != nil && bdg.Tag() != TypeTag && bdg.Dtype().family == TFFtn {
 			// check local fn defns for use of btcopy.selfsym. These are hard to handle because CG flattens scoping in d8m defn
 			funi := bdg.(*Funinst)
 			if TraversePre(funi.body, identWorkfn, btcopy.selfsym) {
