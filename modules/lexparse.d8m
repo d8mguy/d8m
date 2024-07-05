@@ -1010,6 +1010,11 @@ val parseState = extend tuple(langdef: langDefn) where {
         (tkn in langdef.lexer.tknclassStrings && cxt.toktype == tkn) || cxt.tknval == tkn
     }
 
+    method reInitialize = \mod(inp:list(byte)) {
+        bytes = inp
+        cxt = [parseCxt: 0, 0, 0, "", ""]
+    }
+
     method lithook = \mod(ldef: langDefn) {
         error = (ldef.error == "" ? nil : [Term: "language defn error", ldef.error, 0])
         langdef = ldef

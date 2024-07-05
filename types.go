@@ -608,6 +608,7 @@ func (t *Type) wrapPointer() *Type {
 	return makeType0(TFPtr, t, fmt.Sprintf("*%s", t.cachedString))
 }
 
+// bug alert: this should check all methods with same identifier
 func (t *Type) canAddMethod(mthd *Symbol) bool {
 	inx := t.methodIndex(mthd.ident)
 	if inx < 0 || t.methods[inx].sym.ident != mthd.ident {

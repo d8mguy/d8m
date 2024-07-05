@@ -1148,16 +1148,20 @@ func (t *TermTL) specialFuncall(ftnname string, argcount int, cntt *Type, tci *T
 		if t.args[0].Tag() != Ident {
 			return tci.Error("symbol expected", t)
 		}
-		var fn Term
+		var fn *Symbol
 		xtndInx := tci.cxt.Find(ExtendExpr, 0, NoTerm)
+		fnname := t.args[0].(*Token).val
 		if xtndInx >= 0 {
 			xtndType := (*tci.cxt)[xtndInx].plist.Find("basetype").(*Type)
-			fn = xtndType.methods.Find(t.args[0].(*Token).val)
-		}
-		if fn == nil {
-			fn = t.args[0].Typecheck(TPFunction, tci)
-			if fn.Tag() == ErrorTag {
-				return fn
+			fn = xtndType.methods.Find(fnname)
+			if fn == nil {
+				fnx := t.args[0].Typecheck(TPFunction, tci)
+				if fnx.Tag() == ErrorTag {
+					return fnx
+				}
+				if fnx.Tag() != SymbolTag {
+					return tci.Error("only symbols can be purified", t)
+				}
 			}
 		}
 		if ftnname == "purified" {
@@ -1165,15 +1169,11 @@ func (t *TermTL) specialFuncall(ftnname string, argcount int, cntt *Type, tci *T
 				return tci.Error(fn.String()+"doesn't need to be purified", t)
 			}
 			fn.Plist().Add("purified", true)
-		} else if fn.Tag() == SymbolTag {
-			fnsym := fn.(*Symbol)
-			if fnsym.binding == nil {
+			if fn.binding == nil {
 				return tci.Error("cannot declare this of unbound function", t)
 			}
-			funi := fnsym.binding.(*Funinst)
+			funi := fn.binding.(*Funinst)
 			funi.Plist().Add(ftnname, true)
-		} else {
-			return tci.Error("cannot assert "+ftnname+" of non-symbol", t)
 		}
 		return biScope["__EAP"][0]
 	case "rcvrLinked":

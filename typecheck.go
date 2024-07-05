@@ -3831,7 +3831,16 @@ func (t *TermL) Typecheck(cntt *Type, tci *TCInfo) Term {
 			if basetype.canAddMethod(mthdsym) {
 				basetype.addMethod(mthdsym)
 			} else {
-				return tci.Error(fmt.Sprintf("method %s already exists", mthdsym.ident), t)
+				// a method with same signature exists but maybe it's a fwd refnc. If so, also tag as recursive
+				// even though it might not be.
+				inx := basetype.methodIndex(mthdsym.ident) // can't be < 0
+				xmthd := basetype.methods[inx]
+				if xmthd.sym.binding == nil || xmthd.sym.binding.(*Funinst).body == nil {
+					xmthd.sym = mthdsym
+					mthdsym.plist.Add("recursive", true)
+				} else {
+					return tci.Error(fmt.Sprintf("method %s already exists", mthdsym.ident), t)
+				}
 			}
 		}
 		tci.cxt.Pop()
