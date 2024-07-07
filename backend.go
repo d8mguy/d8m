@@ -2064,7 +2064,7 @@ func (iln *inlineInfo) multiretGomap4Nil(trm *TermTT) Term {
 	mrargs[2] = trm.arg0
 	newstmts := make([]Term, 2)
 	newstmts[0] = makeTermL(Multiret, mrargs, TypeNothing, Pos(-1), Pos(-1))
-	newstmts[1] = mrargs[1]
+	newstmts[1] = makeTermT(Lognot, mrargs[1], TypeBool, Pos(-1), Pos(-1))
 	tmpscope := makeScope() // vehicle to copy gensym into inserted scope
 	tmpscope.Add(mrargs[1].(*Symbol), 0)
 	return iln.insertOOL(newstmts, tmpscope, TypeBool)

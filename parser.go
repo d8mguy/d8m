@@ -133,10 +133,12 @@ func (p *Parser) recordError(msg string, tkn *Token) Term {
 	tkpos := Pos(-1)
 	if tkn != nil {
 		tkpos = tkn.pos
+	} else if len(*p.scanner.tokbufp) > 0 {
+		tkpos = (*p.scanner.tokbufp)[0].pos
 	}
 	trm := makeTermB(ErrorTag, msg, tkpos)
-	if tkn != nil {
-		trm.plist.Add("linechar", p.scanner.getLineCharInfo(tkn.pos.byteIndex(), p.scanner.fname))
+	if tkpos != Pos(-1) {
+		trm.plist.Add("linechar", p.scanner.getLineCharInfo(tkpos.byteIndex(), p.scanner.fname))
 	}
 	p.errors = append(p.errors, trm)
 	return trm
