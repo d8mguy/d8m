@@ -1,0 +1,29 @@
+// some code around divisibility ftns
+
+
+export gcd, gcdlist, lcm, lcmlist
+
+// gcd of two non-neg integers
+val gcd = \(a,b:integer) -> integer {
+    if(a == 0) b else gcd(b % a, a)
+}
+
+// This could be named gcd in d8m, since it's TC distinct from the one above. But for some reason I prefer not to.
+val gcdlist = \imp(lst:list(integer)) {
+    if(lst.count == 0) 0        // this is really an error
+    else {
+        var soFar = lst[0]
+        each(elt^lst.tail) {
+            soFar = gcd(soFar, elt)
+            if(soFar == 1) break
+        }
+        soFar
+    }
+}
+
+// A not particularly efficient way to calculate the LCM
+val lcm = \(a,b:integer) { a*b/gcd(a,b) }
+val lcmlist = \imp(lst:list(integer)) {
+    if(lst.count == 0) 0        // this is really an error
+    else reduce(lst.tail, \(x,y:integer) { lcm(x,y)}, lst[0])
+}

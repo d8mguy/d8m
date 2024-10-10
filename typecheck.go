@@ -3320,7 +3320,8 @@ func (t *TermL) Typecheck(cntt *Type, tci *TCInfo) Term {
 	switch t.kind {
 	default:
 		if t.dtype == nil {
-			panic("unexpected tag")
+			errtrm := tci.Error(fmt.Sprintf("unexpected tag: %d", t.kind), t)
+			panic(errtrm.String())
 		}
 	case Stmts:
 		if len(t.args) == 0 {

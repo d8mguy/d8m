@@ -2535,6 +2535,7 @@ func (qci *QCInfo) markUsedType(typ *Type, tnm0 string) {
 			}
 		}
 	}
+	//logger.Println("noting type", tnm0)
 	qci.usedTypes.insert(inx, makeSymbol(tnm0, typ, nil))
 	for _, mx := range typ.methods {
 		gm := mx.sym.plist.Find("Gomethod")
@@ -2577,6 +2578,10 @@ func (qci *QCInfo) namedTypes(trm Term) {
 			collectType(typ.v.(*Type), seen)
 		case TFSpace:
 			collectType(typ.v.(*Spacetype).elttype, seen)
+		case TFOrtype:
+			for _, a := range typ.v.(*Ortype).variants {
+				collectType(a.dtype, seen)
+			}
 		case TFTuple:
 			for _, a := range typ.v.(*Tupletype).attribs {
 				collectType(a.dtype, seen)
@@ -3094,7 +3099,7 @@ func checkScopes(trm Term, printall bool) bool {
 // a symbol in which case origsym comes in as nil.
 func identifierOutOfScope(scope *Scope, nested []*Scope, ident string, origsym *Symbol) string {
 	ident0 := ident
-	for i := 0; i < 100; i++ {
+	for i := 0; i < 200; i++ {
 		var sym *Symbol
 		if scope != nil {
 			sym, _ = scope.Lookup(ident0)
@@ -3676,11 +3681,11 @@ func anyOOL(trm Term) bool {
 	return anyOOLOne(trm)
 }
 
-var prInline = true
-var prCleanup = true
-var prOptimize = true
+var prInline = false
+var prCleanup = false
+var prOptimize = false
 var prTiming = false
-var prRewrite = true
+var prRewrite = false
 
 // Traverse trm, performing all transforms that might introduce "out of line" statements. (Hence "OOL".)
 // Historically, inlining was the first of these and the code started out just inlining. However, the machinery to
@@ -4089,13 +4094,13 @@ func (qci *QCInfo) backendFixups() {
 		qci.externs[0].binding = trm0
 	}
 	for _, sym := range qci.externs[1:] {
-		if sym.binding.Tag() == FuninstTag {
+		if sym.binding != nil && sym.binding.Tag() == FuninstTag {
 			funi := sym.binding.(*Funinst)
 			funi0, ch := qci.backendFixups0(funi)
 			if ch {
 				sym.binding = funi0
 			}
-		} else if sym.binding.Tag() == Funcall && sym.binding.(*TermTL).trm.Tag() == FuninstTag {
+		} else if sym.binding != nil && sym.binding.Tag() == Funcall && sym.binding.(*TermTL).trm.Tag() == FuninstTag {
 			funi := sym.binding.(*TermTL).trm.(*Funinst)
 			funi0, ch := qci.backendFixups0(funi)
 			if ch {
